@@ -1,0 +1,56 @@
+[project]
+name = "neural-retrieval"
+version = "0.1.0"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  # Core ML — pinned to match foundry-llm's torch 2.2.x
+  "torch>=2.2,<2.5",
+  "transformers>=4.44,<4.50",
+  "sentence-transformers>=3.0,<4.0",
+  "accelerate>=0.33",
+  "bitsandbytes>=0.43",
+  # Retrieval
+  "faiss-cpu>=1.8,<2.0",
+  "datasets>=2.20",
+  "ir_datasets>=0.5.6",
+  "bm25s>=0.2",
+  "numpy>=1.26,<2.0",
+  # Ranking
+  "lightgbm>=4.5",
+  "scikit-learn>=1.5",
+  # Backend / observability
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.8",
+  "sse-starlette>=2.1",
+  "prometheus-client>=0.20",
+  "opentelemetry-api>=1.27",
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp>=1.27",
+  # foundry-llm (editable local install)
+  "foundry-llm @ file://${PROJECT_ROOT}/../foundry-llm",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "hypothesis>=6.108",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "pre-commit>=3.8",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["gpu: requires GPU (deselect with -m 'not gpu')"]

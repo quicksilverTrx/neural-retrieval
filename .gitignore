@@ -1,0 +1,62 @@
+# Data — never commit corpus or large binaries
+data/corpus/
+data/qrels/
+data/queries/
+data/beir/
+data/hotpotqa/
+data/nq/
+data/squad2/
+data/models/
+data/*.npy
+data/*.parquet
+data/*.bin
+data/msmarco_manifest.json
+
+# FAISS indexes
+*.faiss
+*.index
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.safetensors
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Secrets / keys
+*.key
+*.pem
+HF_Token.txt
+runpod_api_key
+vat_api_key

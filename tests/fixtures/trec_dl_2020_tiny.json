@@ -1,0 +1,523 @@
+{
+  "passages": [
+    {
+      "pid": "0",
+      "text": "This is passage 0 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "1",
+      "text": "This is passage 1 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "2",
+      "text": "This is passage 2 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "3",
+      "text": "This is passage 3 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "4",
+      "text": "This is passage 4 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "5",
+      "text": "This is passage 5 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "6",
+      "text": "This is passage 6 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "7",
+      "text": "This is passage 7 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "8",
+      "text": "This is passage 8 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "9",
+      "text": "This is passage 9 about topic query_9 and related subject matter."
+    },
+    {
+      "pid": "10",
+      "text": "This is passage 10 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "11",
+      "text": "This is passage 11 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "12",
+      "text": "This is passage 12 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "13",
+      "text": "This is passage 13 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "14",
+      "text": "This is passage 14 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "15",
+      "text": "This is passage 15 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "16",
+      "text": "This is passage 16 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "17",
+      "text": "This is passage 17 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "18",
+      "text": "This is passage 18 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "19",
+      "text": "This is passage 19 about topic query_9 and related subject matter."
+    },
+    {
+      "pid": "20",
+      "text": "This is passage 20 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "21",
+      "text": "This is passage 21 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "22",
+      "text": "This is passage 22 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "23",
+      "text": "This is passage 23 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "24",
+      "text": "This is passage 24 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "25",
+      "text": "This is passage 25 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "26",
+      "text": "This is passage 26 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "27",
+      "text": "This is passage 27 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "28",
+      "text": "This is passage 28 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "29",
+      "text": "This is passage 29 about topic query_9 and related subject matter."
+    },
+    {
+      "pid": "30",
+      "text": "This is passage 30 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "31",
+      "text": "This is passage 31 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "32",
+      "text": "This is passage 32 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "33",
+      "text": "This is passage 33 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "34",
+      "text": "This is passage 34 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "35",
+      "text": "This is passage 35 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "36",
+      "text": "This is passage 36 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "37",
+      "text": "This is passage 37 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "38",
+      "text": "This is passage 38 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "39",
+      "text": "This is passage 39 about topic query_9 and related subject matter."
+    },
+    {
+      "pid": "40",
+      "text": "This is passage 40 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "41",
+      "text": "This is passage 41 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "42",
+      "text": "This is passage 42 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "43",
+      "text": "This is passage 43 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "44",
+      "text": "This is passage 44 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "45",
+      "text": "This is passage 45 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "46",
+      "text": "This is passage 46 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "47",
+      "text": "This is passage 47 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "48",
+      "text": "This is passage 48 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "49",
+      "text": "This is passage 49 about topic query_9 and related subject matter."
+    },
+    {
+      "pid": "50",
+      "text": "This is passage 50 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "51",
+      "text": "This is passage 51 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "52",
+      "text": "This is passage 52 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "53",
+      "text": "This is passage 53 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "54",
+      "text": "This is passage 54 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "55",
+      "text": "This is passage 55 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "56",
+      "text": "This is passage 56 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "57",
+      "text": "This is passage 57 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "58",
+      "text": "This is passage 58 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "59",
+      "text": "This is passage 59 about topic query_9 and related subject matter."
+    },
+    {
+      "pid": "60",
+      "text": "This is passage 60 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "61",
+      "text": "This is passage 61 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "62",
+      "text": "This is passage 62 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "63",
+      "text": "This is passage 63 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "64",
+      "text": "This is passage 64 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "65",
+      "text": "This is passage 65 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "66",
+      "text": "This is passage 66 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "67",
+      "text": "This is passage 67 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "68",
+      "text": "This is passage 68 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "69",
+      "text": "This is passage 69 about topic query_9 and related subject matter."
+    },
+    {
+      "pid": "70",
+      "text": "This is passage 70 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "71",
+      "text": "This is passage 71 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "72",
+      "text": "This is passage 72 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "73",
+      "text": "This is passage 73 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "74",
+      "text": "This is passage 74 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "75",
+      "text": "This is passage 75 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "76",
+      "text": "This is passage 76 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "77",
+      "text": "This is passage 77 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "78",
+      "text": "This is passage 78 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "79",
+      "text": "This is passage 79 about topic query_9 and related subject matter."
+    },
+    {
+      "pid": "80",
+      "text": "This is passage 80 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "81",
+      "text": "This is passage 81 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "82",
+      "text": "This is passage 82 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "83",
+      "text": "This is passage 83 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "84",
+      "text": "This is passage 84 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "85",
+      "text": "This is passage 85 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "86",
+      "text": "This is passage 86 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "87",
+      "text": "This is passage 87 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "88",
+      "text": "This is passage 88 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "89",
+      "text": "This is passage 89 about topic query_9 and related subject matter."
+    },
+    {
+      "pid": "90",
+      "text": "This is passage 90 about topic query_0 and related subject matter."
+    },
+    {
+      "pid": "91",
+      "text": "This is passage 91 about topic query_1 and related subject matter."
+    },
+    {
+      "pid": "92",
+      "text": "This is passage 92 about topic query_2 and related subject matter."
+    },
+    {
+      "pid": "93",
+      "text": "This is passage 93 about topic query_3 and related subject matter."
+    },
+    {
+      "pid": "94",
+      "text": "This is passage 94 about topic query_4 and related subject matter."
+    },
+    {
+      "pid": "95",
+      "text": "This is passage 95 about topic query_5 and related subject matter."
+    },
+    {
+      "pid": "96",
+      "text": "This is passage 96 about topic query_6 and related subject matter."
+    },
+    {
+      "pid": "97",
+      "text": "This is passage 97 about topic query_7 and related subject matter."
+    },
+    {
+      "pid": "98",
+      "text": "This is passage 98 about topic query_8 and related subject matter."
+    },
+    {
+      "pid": "99",
+      "text": "This is passage 99 about topic query_9 and related subject matter."
+    }
+  ],
+  "queries": {
+    "0": "what is topic 0",
+    "1": "what is topic 1",
+    "2": "what is topic 2",
+    "3": "what is topic 3",
+    "4": "what is topic 4",
+    "5": "what is topic 5",
+    "6": "what is topic 6",
+    "7": "what is topic 7",
+    "8": "what is topic 8",
+    "9": "what is topic 9"
+  },
+  "qrels": {
+    "0": {
+      "81": 3,
+      "14": 3,
+      "3": 2,
+      "94": 2,
+      "35": 1,
+      "31": 1,
+      "28": 0,
+      "17": 0
+    },
+    "1": {
+      "94": 3,
+      "13": 3,
+      "86": 2,
+      "69": 2,
+      "11": 1,
+      "75": 1,
+      "54": 0,
+      "4": 0
+    },
+    "2": {
+      "3": 3,
+      "11": 3,
+      "27": 2,
+      "29": 2,
+      "64": 1,
+      "77": 1,
+      "71": 0,
+      "25": 0
+    },
+    "3": {
+      "91": 3,
+      "83": 3,
+      "89": 2,
+      "69": 2,
+      "53": 1,
+      "28": 1,
+      "57": 0,
+      "75": 0
+    },
+    "4": {
+      "35": 3,
+      "0": 3,
+      "97": 2,
+      "20": 2,
+      "89": 1,
+      "54": 1,
+      "43": 0,
+      "19": 0
+    },
+    "5": {
+      "27": 3,
+      "97": 3,
+      "43": 2,
+      "13": 2,
+      "11": 1,
+      "48": 1,
+      "12": 0,
+      "45": 0
+    },
+    "6": {
+      "44": 3,
+      "77": 3,
+      "33": 2,
+      "5": 2,
+      "93": 1,
+      "58": 1,
+      "68": 0,
+      "15": 0
+    },
+    "7": {
+      "48": 3,
+      "10": 3,
+      "70": 2,
+      "37": 2,
+      "80": 1,
+      "79": 1,
+      "46": 0,
+      "73": 0
+    },
+    "8": {
+      "24": 3,
+      "90": 3,
+      "8": 2,
+      "5": 2,
+      "84": 1,
+      "29": 1,
+      "98": 0,
+      "37": 0
+    },
+    "9": {
+      "10": 3,
+      "29": 3,
+      "12": 2,
+      "48": 2,
+      "35": 1,
+      "58": 1,
+      "81": 0,
+      "46": 0
+    }
+  },
+  "meta": {
+    "num_queries": 10,
+    "num_passages": 100,
+    "description": "Tiny fixture for fast unit/integration tests. Not real TREC data."
+  }
+}
