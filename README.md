@@ -4,31 +4,43 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 
 ---
 
-## What's in the Repo
-
-**Evaluation framework** — `evaluation/`
-
-- `metrics.py` — nDCG@k, MRR@k, Recall@k, per-query breakdown, bootstrap CI. Implemented from Järvelin & Kekäläinen (2002). No pytrec_eval dependency.
-- `trec_eval.py` — loader for TREC DL 2019 (43 queries, ~9.2K judgments) and TREC DL 2020 (54 queries, ~11.4K judgments).
-
-**Tests** — `tests/`
-
-- `tests/evaluation/test_trec_eval.py` — loader structure tests + 15 metric behavioural tests (nDCG, MRR, Recall edge cases).
-- `tests/fixtures/trec_dl_2020_tiny.json` — 10-query, 100-passage fixture with graded qrels (0–3).
-
-**Config** — `pyproject.toml`, `.gitignore`
-
----
-
 ## Results
 
 | System | DL2020 nDCG@10 | DL2019 nDCG@10 | DL2020 Recall@100 | P99 (ms) |
 |---|---|---|---|---|
-| BM25s library | 0.428 | 0.363 | 0.424 | 356 |
+| BM25s library | 0.428 | 0.363 | 0.424 | 565 |
 | Custom BM25 | — | — | — | — |
 | Dense (MiniLM + FAISS) | — | — | — | — |
 | Hybrid RRF | — | — | — | — |
 | Hybrid + cross-encoder | — | — | — | — |
+
+---
+
+## What's in the Repo
+
+**Evaluation** — `evaluation/`
+
+- `metrics.py` — nDCG@k, MRR@k, Recall@k, per-query breakdown, bootstrap CI. Implemented from Järvelin & Kekäläinen (2002). No pytrec_eval dependency.
+- `trec_eval.py` — loader for TREC DL 2019 (43 queries, ~9.2K judgments) and TREC DL 2020 (54 queries, ~11.4K judgments).
+- `bm25s_baseline.py` — BM25s library baseline on 8.8M passages. Index cached after first build (~30 min); subsequent runs load in ~5s.
+
+**Retrieval** — `retrieval/`
+
+- `chunker.py` — 256-token windows, 32-token stride, word-boundary tokenization matching the BM25 index tokenizer.
+
+**Benchmarks** — `benchmarks/`
+
+- `methodology.md` — evaluation design rationale for each system.
+- `SCHEMA.md` — canonical result JSON schema.
+- `results/` — one immutable JSON file per experiment run.
+
+**Tests** — `tests/`
+
+- `tests/evaluation/` — 31 tests: loader correctness + metric behavioural tests (nDCG, MRR, Recall edge cases).
+- `tests/retrieval/` — 30 tests: chunker unit tests + Hypothesis property tests.
+- `tests/fixtures/trec_dl_2020_tiny.json` — 10-query, 100-passage fixture with graded qrels (0–3).
+
+**Data pipeline** — `data/prepare_msmarco.py`, `scripts/bootstrap_data.sh`
 
 ---
 
@@ -38,8 +50,11 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 conda activate foundry-llm
 pip install -e ".[dev]"
 
-# Download MS MARCO + TREC DL data
+# Download MS MARCO + TREC DL data (~42 GB)
 bash scripts/bootstrap_data.sh
+
+# Run BM25s baseline
+python evaluation/bm25s_baseline.py --top-k 100
 
 # Run tests
 pytest tests/ -v
