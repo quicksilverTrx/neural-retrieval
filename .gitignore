@@ -60,3 +60,10 @@ Thumbs.db
 HF_Token.txt
 runpod_api_key
 vat_api_key
+
+# Project-internal planning + agent config (not for external repo)
+CLAUDE.md
+.claude/
+neural_retrieval_spec_v5.md
+neural_retrieval_spec_v5_new.md
+internal/

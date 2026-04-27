@@ -9,7 +9,7 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 | System | DL2020 nDCG@10 | DL2019 nDCG@10 | DL2020 Recall@100 | P99 (ms) |
 |---|---|---|---|---|
 | BM25s library | 0.428 | 0.363 | 0.424 | 565 |
-| Custom BM25 | — | — | — | — |
+| **Custom BM25** | **0.4622** | **0.3731** | **0.4635** | **720** |
 | Dense (MiniLM + FAISS) | — | — | — | — |
 | Hybrid RRF | — | — | — | — |
 | Hybrid + cross-encoder | — | — | — | — |
@@ -27,6 +27,11 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 **Retrieval** — `retrieval/`
 
 - `chunker.py` — 256-token windows, 32-token stride, word-boundary tokenization matching the BM25 index tokenizer.
+- `inverted_index/` — custom BM25 over an `array.array('i')` posting-list store (~14× memory reduction vs `list[tuple]`), numpy-vectorised `score_batch`, NRIDX2 binary persistence with sha256 verification, and an in-progress VByte gap codec.see `docs/design_decisions.md` #6, #15, #17 for the rationale and the latency/memory traceback.
+
+**Evaluation drivers**
+
+- `evaluation/bm25_eval.py` — builds the custom BM25 index in parallel from a JSONL corpus cache, then runs the TREC DL 2019 + 2020 evaluation. Supports incremental index reuse via `--index-path` and per-shard parallel builds via `--jobs N`.
 
 **Benchmarks** — `benchmarks/`
 
@@ -53,8 +58,11 @@ pip install -e ".[dev]"
 # Download MS MARCO + TREC DL data (~42 GB)
 bash scripts/bootstrap_data.sh
 
-# Run BM25s baseline
+# Run BM25s library baseline
 python evaluation/bm25s_baseline.py --top-k 100
+
+# Build + evaluate the custom BM25 index (4-way parallel, ~2 min on 8.8M passages)
+python evaluation/bm25_eval.py --jobs 4 --index-path data/custom_bm25_8m.bin
 
 # Run tests
 pytest tests/ -v
