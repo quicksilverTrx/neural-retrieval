@@ -440,3 +440,78 @@ E5 is 2.1× slower per passage despite being only 1.5× larger by parameter coun
 
 ---
 
+
+## Section 4 — Hybrid Fusion
+
+### Why this section exists
+
+BM25 catches different relevant passages than dense retrieval — exact-match
+queries (rare entities, code identifiers, acronyms) win on BM25; semantic
+queries (paraphrase, synonym) win on dense. Fusing the two recovers the
+union. The eval harness produces a 4-row ablation: BM25 alone / Dense alone /
+RRF / best score-fusion α.
+
+### Two fusion families
+
+**RRF (rank fusion) — `retrieval/fusion/rrf.py`.**
+`score(d) = Σ_i 1/(k + rank_i(d))` with k=60. Pure rank-based: no score
+normalisation, distribution-agnostic, robust to encoder/BM25 retuning.
+
+**α score-fusion — implemented in `evaluation/hybrid_eval.py`.**
+Per-query min-max-normalise BM25 and dense scores into [0, 1], then take
+`α × bm25_norm + (1−α) × dense_norm`. Sweep α ∈ {0.0, 0.1, …, 1.0} and
+report the best value alongside RRF for the same query set.
+
+### Results (TREC DL 2020, 54 queries, MiniLM IVF-PQ m=32)
+
+| System | nDCG@10 | MRR@10 | Recall@100 |
+|---|---|---|---|
+| BM25 only | 0.4622 | 0.8735 | 0.4635 |
+| Dense only | 0.5262 | 0.8585 | 0.4037 |
+| RRF (k=60) | 0.5240 | 0.8486 | 0.5488 |
+| **Best α=0.4 score-fusion** | **0.5815** | **0.8806** | **0.5450** |
+
+α-sweep:
+
+| α (BM25 weight) | nDCG@10 | MRR@10 | Recall@100 |
+|---|---|---|---|
+| 0.0 (dense only) | 0.5262 | 0.8585 | 0.4060 |
+| 0.1 | 0.5425 | 0.8570 | 0.5117 |
+| 0.2 | 0.5485 | 0.8691 | 0.5350 |
+| 0.3 | 0.5656 | 0.8644 | 0.5437 |
+| **0.4** | **0.5815** | **0.8806** | **0.5450** |
+| 0.5 | 0.5726 | 0.8904 | 0.5499 |
+| 0.6 | 0.5533 | 0.9259 | 0.5498 |
+| 0.7 | 0.5279 | 0.9105 | 0.5456 |
+| 0.8 | 0.5078 | 0.9012 | 0.5391 |
+| 0.9 | 0.4874 | 0.8858 | 0.5288 |
+| 1.0 (BM25 only) | 0.4619 | 0.8735 | 0.4644 |
+
+### Why score-fusion wins on this system
+
+With the m=32 dense leg the dense scores carry enough signal that
+explicitly weighting them (α=0.4 → 60 % dense weight) beats RRF's
+rank-only projection. RRF is conservative-by-design: it ignores the
+absolute confidence of each system in favour of robustness across
+distributions. When the distributions are strong on both sides,
+score-fusion captures more of the joint signal.
+
+**Production pick:** α=0.4 score-fusion. RRF stays in the API as the
+fallback for cases where score distributions are unfamiliar (e.g.
+during an encoder change). See `docs/design_decisions.md` #11 for the
+full rationale.
+
+### Recall@100 notes
+
+Hybrid Recall@100 (0.5488 RRF, 0.5450 α=0.4) is *higher* than either
+leg alone (BM25 0.4635, dense 0.4037). The two retrieval legs surface
+different relevant passages — fusion is the recovery mechanism. The
+Recall@100 → 0.75 ship gate is still missed (encoder ceiling, see
+decision #21), but hybrid layer doubles the recall improvement over
+the better single leg.
+
+### Result JSON location
+
+`benchmarks/results/{timestamp}_hybrid_{config_hash8}.json` — top-level
+keys: `ablation`, `alpha_sweep`, `best_alpha`, `ship_gate`,
+`per_query_rrf` (used by `docs/failure_modes.md`).

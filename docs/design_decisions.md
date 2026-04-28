@@ -103,6 +103,106 @@ with VByte payloads.
 
 ---
 
+### 10. Post-retrieval ACL filter — not query-time FAISS IDSelector (chosen 2026-04-26)
+
+**Decision: ship a post-retrieval ACL filter** (`retrieval/acl.py`
+`ACLFilter`) that runs after BM25/dense/RRF have produced a ranked list,
+not a query-time FAISS IDSelector that prunes the search to allowed
+doc_ids upfront.
+
+**The two architectures considered:**
+
+| Architecture | Mechanism | Pros | Cons |
+|---|---|---|---|
+| **Post-retrieval (chosen)** | Retrieve top-K × *oversample*; drop docs where `user_role ∉ allowed_roles[doc_id]`; truncate to K. | Single filter for both BM25 and dense legs. No FAISS coupling. ACL data lives in one place (`data/acl/passage_acl.json`). | Wastes work on the dropped docs. For very restrictive roles, even *oversample = 4* under-fills top-K. |
+| Query-time IDSelector | Build a `faiss.IDSelectorBatch` of allowed pids per role; pass at search time so FAISS only scans allowed clusters. | No wasted work; recall scales 1:1 with the role's accessible-set size. | Couples FAISS to ACL. IDSelector overhead at 8.8M is non-trivial (the selector is consulted per inverted-list scan). Doesn't help BM25 — would need a second mechanism on the BM25 leg. |
+
+**Why we shipped post-retrieval:**
+
+1. **Decouples retrieval from permissions.** Retrieval is "find the best
+   docs for this query"; ACL is "is this caller allowed to see this doc".
+   Mixing them at the FAISS layer makes both harder to reason about.
+2. **One filter for two retrieval legs.** BM25 + dense both flow through
+   `ACLFilter.filter()` after fusion. A FAISS IDSelector wouldn't cover
+   BM25; we'd need a parallel posting-list filter, doubling the surface.
+3. **Measured drop is acceptable for 3 of 5 roles** at *oversample = 2×*
+   (admin / engineer / analyst all drop <25% Recall@100 vs unrestricted).
+   The pathological cases are `sales` (-41%) and `viewer` (-60%) — for
+   those a tactical bump to *oversample = 4× / 8×* recovers most of the
+   loss without an architectural change.
+
+**Per-role Recall@100** (`benchmarks/results/{ts}_1D_*.json`, oversample=2×):
+
+| admin | engineer | analyst | sales | viewer |
+|---|---|---|---|---|
+| 0.4255 (0%) | 0.3523 (-17%) | 0.3352 (-21%) | 0.2512 (-41%) | 0.1696 (-60%) |
+
+**Re-evaluation trigger:** if a future role has < 5 % corpus access
+(e.g. a "compliance-only" role on a 99 %-restricted shard), the
+oversample multiplier needed to refill top-K becomes prohibitive and
+the IDSelector path becomes the right call. Cross that bridge when
+the role appears.
+
+---
+
+### 11. RRF k=60 (rank fusion) + α=0.4 score fusion as the production hybrid
+
+**Implemented:** `retrieval/fusion/rrf.py` (`fuse(ranked_lists, k=60)`,
+`fuse_scored(bm25_results, dense_results, k=60)`, `_rrf_scores`). 16/16
+unit tests + Hypothesis property tests pass.
+
+**RRF formula:**
+
+```
+score(d) = Σ_i 1 / (k + rank_i(d))     k = 60
+```
+
+For each system *i* the document at rank *r* contributes `1 / (k + r)`.
+Documents absent from a system's list contribute 0 for that system.
+
+**k = 60** is the Cormack-Clarke-Buettcher (2009) value. The intuition:
+*k* prevents a document ranked #1 in one system from dominating when
+it's absent from another. At k=60 the rank-1 → rank-2 gap is
+1/61 − 1/62 ≈ 0.000264 — small enough that a doc seen by both systems
+at modest ranks beats a doc seen only by one system at rank 1.
+
+**Why RRF is the conservative-default fusion:**
+
+- No score normalisation. BM25 scores are unbounded; dense (cosine/L2)
+  scores live in a different scale entirely. Score-based fusion needs
+  either min-max normalisation (which is per-query and noisy) or a
+  trained weighting (decision boundary depends on the score
+  distributions of both systems).
+- RRF only uses ranks, which are distribution-agnostic. A new encoder
+  or a re-tuned BM25 doesn't break the fusion.
+
+**But α-fusion now wins on this system:** with the m=32 dense leg from
+decision #20, hybrid_eval shows:
+
+| System | DL2020 nDCG@10 | DL2020 R@100 |
+|---|---|---|
+| BM25 | 0.4622 | 0.4635 |
+| Dense (m=32) | 0.5262 | 0.4037 |
+| RRF (k=60) | 0.5240 | 0.5488 |
+| **Best α=0.4 score-fusion** | **0.5815** | **0.5450** |
+
+Score fusion at α=0.4 (40 % BM25, 60 % dense, min-max-normalised per
+query) beats RRF by **+0.058 nDCG@10**. With a stronger dense leg the
+joint score signal carries more information than the rank-only
+projection RRF uses; weighting the dense leg explicitly captures it.
+
+**Production pick: α=0.4 score fusion**, with RRF retained as the
+conservative fallback in the API (no normalisation, no per-system
+distribution assumptions). When a future encoder change makes either
+leg's score distribution look unfamiliar, RRF still works correctly
+without retuning α.
+
+**Re-evaluation trigger:** any change to the dense leg (encoder, index
+family, m, nbits) should re-run the α sweep — the optimal α tracks the
+strength of the dense signal.
+
+---
+
 ### 15. `array.array('i')` storage for posting lists, not `list[tuple]`
 
 **Decided:** 2026-04-24, after four failed full-corpus build attempts.

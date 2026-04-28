@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "timestamp_utc": "2026-04-25T18:24:14.079753Z",
+  "phase": "1.D",
+  "config": {
+    "retriever": "bm25_acl_filtered",
+    "bm25": {
+      "k1": 1.2,
+      "b": 0.75
+    },
+    "top_k": 100,
+    "oversample": 2,
+    "qrels_hash": "sha256:fecedc8e09e959b1a482bbfb1961bc46f0506497223da6c7d2e123a937337d64"
+  },
+  "dataset": "trec_dl_2020",
+  "unrestricted_recall_100": 0.4255,
+  "acl_role_results": {
+    "admin": {
+      "Recall@100": 0.4255,
+      "drop": 0.0
+    },
+    "engineer": {
+      "Recall@100": 0.3523,
+      "drop": 0.0731
+    },
+    "analyst": {
+      "Recall@100": 0.3352,
+      "drop": 0.0903
+    },
+    "sales": {
+      "Recall@100": 0.2512,
+      "drop": 0.1742
+    },
+    "viewer": {
+      "Recall@100": 0.1696,
+      "drop": 0.2559
+    }
+  },
+  "notes": "CAT A: post-retrieval vs query-time ACL decision is owner's. See retrieval/acl.py and docs/design_decisions.md.",
+  "environment": {
+    "python": "3.13.9",
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "commit_sha": "84461f2"
+  }
+}

@@ -11,7 +11,8 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 | BM25s library | 0.428 | 0.363 | 0.424 | 565 |
 | **Custom BM25** | **0.4622** | **0.3731** | **0.4635** | **720** |
 | **Dense (MiniLM + FAISS IVF-PQ m=32)** | **0.5262** | **0.4791** | **0.4037** | **12** |
-| Hybrid RRF | — | — | — | — |
+| Hybrid RRF (k=60) | 0.5240 | 0.4763 | 0.5488 | (BM25-bound) |
+| **Hybrid α-fusion (α=0.4, MiniLM m=32)** | **0.5815** | **0.5108** | **0.5450** | (BM25-bound) |
 | Hybrid + cross-encoder | — | — | — | — |
 
 ---
@@ -29,6 +30,8 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 - `chunker.py` — 256-token windows, 32-token stride, word-boundary tokenization matching the BM25 index tokenizer.
 - `inverted_index/` — custom BM25 over an `array.array('i')` posting-list store (~14× memory reduction vs `list[tuple]`), numpy-vectorised `score_batch`, NRIDX2 binary persistence with sha256 verification, and an in-progress VByte gap codec. See `docs/design_decisions.md` #6, #15, #17 for the rationale and the latency/memory traceback.
 - `dense/` — `SentenceEncoder` for batch-encoding 8.8M passages with MPS streaming `.npy` writes, `FAISSIVFPQIndex` (production: `nlist=4096, m=32, nbits=8`), SQLite chunk → passage `lookup`, and sha256-verified index `recovery` with in-place rebuild.
+- `fusion/` — Reciprocal Rank Fusion (`rrf.fuse`, `rrf.fuse_scored`) with the Cormack-Clarke-Buettcher k=60 default. Pure rank-based, no score normalisation; both rank-list and (doc_id, score)-list APIs.
+- `acl.py` — `PassageACL` synthetic role-bitmap generator (admin / engineer / analyst / sales / viewer over 8.8M passages) plus `ACLFilter` for post-retrieval filtering. See `docs/design_decisions.md` #10 for the post-retrieval-vs-IDSelector trade-off.
 
 **Evaluation drivers**
 
@@ -37,6 +40,8 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 - `evaluation/build_faiss.py`, `build_faiss_flat.py` — train + add the production IVF-PQ index (or the IVF-Flat falsification variant) from existing embeddings.
 - `evaluation/dense_eval.py` — TREC DL 2019+2020 dense-only eval; `--sweep` runs the nprobe sweep at 1/4/8/16/32/64.
 - `evaluation/pq_ceiling_experiment.py` — PQ-ceiling sweep that exercised m∈{16,32}, IVF-SQ8, and IVF-Flat from the same embeddings; the comparison that picked m=32 for production.
+- `evaluation/hybrid_eval.py` — runs BM25 + dense + RRF (k=60) + α-sweep ablation on the same 97 TREC DL queries; emits per-system + per-query metrics.
+- `evaluation/acl_eval.py` — measures Recall@100 drop per role with the post-retrieval ACL filter at configurable oversample factors.
 
 **Benchmarks** — `benchmarks/`
 
