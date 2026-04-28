@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "timestamp_utc": "2026-04-26T22:10:15.469164Z",
+  "phase": "1.E",
+  "config": {
+    "num_queries": 97,
+    "top_k": 100,
+    "nprobe": 16,
+    "rrf_k": 60,
+    "encoder": "all-MiniLM-L6-v2",
+    "bm25_path": "/Users/ron/Desktop/github_projects/neural-retrieval/neural-retrieval/data/custom_bm25_8m.bin",
+    "user_role": "engineer",
+    "bm25_only": false
+  },
+  "stage_latency_ms": {
+    "bm25_retrieval": {
+      "p50": 158.337,
+      "p95": 573.318,
+      "p99": 859.902,
+      "mean": 208.58,
+      "n": 97
+    },
+    "dense_encode": {
+      "p50": 0.005,
+      "p95": 0.007,
+      "p99": 0.039,
+      "mean": 0.006,
+      "n": 97
+    },
+    "faiss_search": {
+      "p50": 1.425,
+      "p95": 3.458,
+      "p99": 13.294,
+      "mean": 1.763,
+      "n": 97
+    },
+    "rrf_fusion": {
+      "p50": 0.15,
+      "p95": 0.221,
+      "p99": 0.394,
+      "mean": 0.158,
+      "n": 97
+    },
+    "acl_filter": {
+      "p50": 0.36,
+      "p95": 2.003,
+      "p99": 3.926,
+      "mean": 0.569,
+      "n": 97
+    },
+    "full_query": {
+      "p50": 161.366,
+      "p95": 576.046,
+      "p99": 862.093,
+      "mean": 211.156,
+      "n": 97
+    }
+  },
+  "ship_gate": {
+    "pass": false,
+    "metric": "full_query P99 < 20ms",
+    "value": 862.093
+  },
+  "environment": {
+    "python": "3.13.9",
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "commit_sha": "84461f2"
+  }
+}
