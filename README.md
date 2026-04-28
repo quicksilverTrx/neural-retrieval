@@ -17,6 +17,15 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 
 ---
 
+## Notable findings
+
+- **Custom BM25 beats the `bm25s` library reference by +0.034 nDCG@10 on TREC DL 2020** after a stopword + numpy-`bincount` rewrite of `score_batch` (47× P50 / 24× P99 latency improvement). Same data structure, same formula — the win is operational. See `docs/design_decisions.md` #15, #17.
+- **PQ-ceiling falsification.** Rebuilt the FAISS index four ways (m=16 / m=32 / SQ8 / Flat) from the same MiniLM embeddings: doubling sub-quantisers (m=16 → m=32) recovered 96.5% of the IVF-Flat recall ceiling at 1/35× the size, P99 still inside 20 ms. The remaining gap to the spec's R@100 = 0.75 target is encoder-bound, not index-bound — the experiment quantified what was previously a guess. See `docs/design_decisions.md` #21.
+- **Cross-stage memory contention surfaced via OTel boundaries.** The pre-optimisation latency report showed BM25 P99 = 25.7 s and ACL P99 = 21 ms. After the BM25 fix, ACL P99 dropped to 3.93 ms with no code change to ACL — the original 21 ms wasn't filter cost, it was GC pressure leaking from BM25's 7 GB transient candidate set. The misdiagnosis was caught only because every stage had its own span. See `docs/design_decisions.md` #17.
+- **α=0.4 score-fusion beats RRF on this system; RRF kept as the conservative fallback.** When the dense leg is strong (m=32), explicit weighting captures more joint signal than rank-fusion. When the encoder distribution shifts, RRF still works without retuning. See `docs/design_decisions.md` #11.
+
+---
+
 ## What's in the Repo
 
 **Evaluation** — `evaluation/`
@@ -32,6 +41,11 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 - `dense/` — `SentenceEncoder` for batch-encoding 8.8M passages with MPS streaming `.npy` writes, `FAISSIVFPQIndex` (production: `nlist=4096, m=32, nbits=8`), SQLite chunk → passage `lookup`, and sha256-verified index `recovery` with in-place rebuild.
 - `fusion/` — Reciprocal Rank Fusion (`rrf.fuse`, `rrf.fuse_scored`) with the Cormack-Clarke-Buettcher k=60 default. Pure rank-based, no score normalisation; both rank-list and (doc_id, score)-list APIs.
 - `acl.py` — `PassageACL` synthetic role-bitmap generator (admin / engineer / analyst / sales / viewer over 8.8M passages) plus `ACLFilter` for post-retrieval filtering. See `docs/design_decisions.md` #10 for the post-retrieval-vs-IDSelector trade-off.
+- `observability/tracing.py` — OpenTelemetry SDK setup + `retrieval_span()` context manager that wraps each retrieval stage. Span names are constants (`SPAN_BM25`, `SPAN_DENSE_ENCODE`, `SPAN_FAISS_SEARCH`, `SPAN_RRF`, `SPAN_ACL`, `SPAN_QUERY`); falls back to a no-op tracer if the OTLP collector is unreachable so observability never blocks the request path.
+
+**Serving** — `api/`
+
+- `api/main.py` — FastAPI app with `POST /search` (modes: bm25 / dense / hybrid), `GET /health` (liveness), `GET /ready` (returns 503 until indexes are loaded), `GET /metrics` (Prometheus text). Lifespan loader handles BM25 + dense + FAISS validate/rebuild + ACL with graceful degradation. `CorrelationIDMiddleware` propagates `X-Request-ID` to OTel root spans and response headers.
 
 **Evaluation drivers**
 
@@ -42,6 +56,11 @@ A multi-stage retrieval and ranking system built over MS MARCO v1 (8.8M passages
 - `evaluation/pq_ceiling_experiment.py` — PQ-ceiling sweep that exercised m∈{16,32}, IVF-SQ8, and IVF-Flat from the same embeddings; the comparison that picked m=32 for production.
 - `evaluation/hybrid_eval.py` — runs BM25 + dense + RRF (k=60) + α-sweep ablation on the same 97 TREC DL queries; emits per-system + per-query metrics.
 - `evaluation/acl_eval.py` — measures Recall@100 drop per role with the post-retrieval ACL filter at configurable oversample factors.
+- `evaluation/latency_report.py` — runs 100 sample queries through each pipeline stage (BM25 / dense_encode / faiss_search / rrf / acl) and records per-stage P50/P95/P99. Used as the audit trail behind decision #17 (BM25 latency optimisation).
+
+**Load testing** — `tests/load/`
+
+- `tests/load/locustfile.py` — Locust harness with realistic 60% hybrid / 20% BM25 / 10% dense / 10% health task weights. Run as `locust -f tests/load/locustfile.py --host http://localhost:8000 --headless -u N -r N --run-time 60s`. Used to produce the 1/5/10/25/50-user throughput sweep (`benchmarks/methodology.md` §5).
 
 **Benchmarks** — `benchmarks/`
 

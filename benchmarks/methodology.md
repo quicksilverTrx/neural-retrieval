@@ -63,12 +63,12 @@ for deduplication and citation.
 final system. It serves two purposes:
 
 1. **Eval harness validation.** If the library baseline nDCG matches the
-   published figure (~0.487 on DL2020), the harness is correct. The custom
-   BM25 index must match this within ±0.02 nDCG.
+ published figure (~0.487 on DL2020), the harness is correct. The custom
+ BM25 index must match this within ±0.02 nDCG.
 
 2. **Tokenisation reference.** `bm25s` applies stopword removal. The comparison
-   between `bm25s` and the custom BM25 will reveal whether tokenisation
-   differences explain any quality gap.
+ between `bm25s` and the custom BM25 will reveal whether tokenisation
+ differences explain any quality gap.
 
 ### Results
 
@@ -85,7 +85,7 @@ BM25 index comparison will quantify the stemming effect directly.
 
 ### Result JSON location
 
-`benchmarks/results/{timestamp}_bm25s_{config_hash8}.json`
+`benchmarks/results/{timestamp}_0_{config_hash8}.json`
 
 Schema: see `benchmarks/SCHEMA.md`.
 
@@ -117,46 +117,46 @@ Three compounding optimisations replaced the original single-process HF approach
 **1. JSONL corpus cache (memory + IO)**
 
 The first run exports the HF Arrow dataset to `data/msmarco_passages.jsonl`
-(integer doc IDs, 3.1 GB, written once in ~136s).  Subsequent builds read JSONL
+(integer doc IDs, 3.1 GB, written once in ~136s). Subsequent builds read JSONL
 directly — no HuggingFace/pyarrow/numpy import — cutting the base-process RSS
 from ~3.5 GB to ~200 MB.
 
-Integer doc IDs: MSMARCO doc IDs are numeric strings (`"7132531"`).  Storing as
+Integer doc IDs: MSMARCO doc IDs are numeric strings (`"7132531"`). Storing as
 `int` (28 B) instead of `str` (~65 B) saves ~37 B per posting-list entry,
 or ~650 MB at 8.8M-doc scale.
 
 **2. Byte-aligned parallel workers (CPU)**
 
 `--jobs N` splits the JSONL into N equal-line shards in one sequential scan
-(~6 s), then spawns N independent OS processes.  Each worker:
+(~6 s), then spawns N independent OS processes. Each worker:
 
 ```
 JSONL (3.1 GB, on SSD)
-    │  f.seek(shard_start_byte)        ← O(1), no scan
-    └─ readline × shard_lines          ← sequential reads
-           │
-           └─ InvertedIndex.add_document()   ← per-worker index
-                  │
-                  └─ save_index() → /tmp/nr_bm25_XXX/partial_N.bin
+ │ f.seek(shard_start_byte) ← O(1), no scan
+ └─ readline × shard_lines ← sequential reads
+ │
+ └─ InvertedIndex.add_document() ← per-worker index
+ │
+ └─ save_index() → /tmp/nr_bm25_XXX/partial_N.bin
 ```
 
-Workers carry no shared state — no GIL contention.  Peak per-worker RSS ≈ 300–400 MB
+Workers carry no shared state — no GIL contention. Peak per-worker RSS ≈ 300–400 MB
 (vs 7 GB for a single-process 8.8M build).
 
 **Why streaming save is essential on macOS:** `pickle.dumps(obj)` must traverse the
 *entire* object graph before returning, forcing macOS to decompress all pages of the
-worker's Python heap simultaneously.  A 1.1M-doc partial index has ~3.8 GB of Python
-heap; macOS compresses this to ~300–400 MB RSS.  When `pickle.dumps()` runs, all
-~3.8 GB must be decompressed at once.  With 8 workers saving concurrently, the demand
+worker's Python heap simultaneously. A 1.1M-doc partial index has ~3.8 GB of Python
+heap; macOS compresses this to ~300–400 MB RSS. When `pickle.dumps()` runs, all
+~3.8 GB must be decompressed at once. With 8 workers saving concurrently, the demand
 is 8 × 3.8 GB = 30+ GB — catastrophic on a 16 GB machine (workers enter permanent
 uninterruptible I/O wait, RSS drops back to ~200 MB as macOS re-compresses the pages
 the workers cannot finish loading, no partial files are ever written).
 
 The fix (`persistence.save_index()` rewrite): `pickle.dump(obj, gzip.GzipFile(mtime=0))`
-serialises incrementally.  Each ~64 KB gzip chunk decompresses only the pages for the
+serialises incrementally. Each ~64 KB gzip chunk decompresses only the pages for the
 current batch of posting-list entries, then immediately allows macOS to re-compress
-those pages.  Peak RAM during save ≈ one gzip write buffer (~64 KB) regardless of
-index size.  `mtime=0` suppresses the gzip timestamp so the sha256 checksum is
+those pages. Peak RAM during save ≈ one gzip write buffer (~64 KB) regardless of
+index size. `mtime=0` suppresses the gzip timestamp so the sha256 checksum is
 deterministic (same data → same bytes → same checksum).
 
 **3. Sequential merge (memory-controlled)**
@@ -190,19 +190,19 @@ O(1), no per-allocation overhead.
 | Peak per-worker RSS during indexing | ~700 MB (array.array('i') is contiguous) |
 | Peak merge-phase RSS | 2,736 MB |
 | Saved index size on disk | 2.8 GB |
-| Index file checksum | `sha256:089e6ae2...b97c528` |
+| Index file checksum (post-optimisation) | `sha256:8b5a509b…` |
 
-**Why the array-backed rewrite was necessary:**  Earlier `list[tuple[int, int]]`
+**Why the array-backed rewrite was necessary:** Earlier `list[tuple[int, int]]`
 storage spent 112 bytes per posting entry (56 B tuple header + 28 B + 28 B per int),
 giving ~10 GB of Python heap per 2.2M-doc worker with entries scattered randomly
-across the address space.  Under parallel save, pickle's object-graph traversal
+across the address space. Under parallel save, pickle's object-graph traversal
 forced macOS's memory compressor to decompress millions of non-contiguous pages
 concurrently — the compressor saturated and builds stalled indefinitely with zero
 disk writes for 12+ minutes.
 
 `array.array('i')` stores postings as a single contiguous int32 buffer per term:
 `array.tobytes()` is one memcpy regardless of list length, and the whole heap is
-14× smaller.  Peak RAM during save is bounded by the single largest posting list
+14× smaller. Peak RAM during save is bounded by the single largest posting list
 (tens of MB at most), not the entire index.
 
 **Recommended `--jobs` value (array-backed):**
@@ -219,10 +219,10 @@ disk writes for 12+ minutes.
 
 Result JSON: `benchmarks/results/20260424T213429Z_1A_7a10b5d9.json`
 
-### Ship gate: ✅ PASS
+### Ship gate: PASS
 
 Custom BM25 DL2020 nDCG@10 = **0.4381**, bm25s baseline = 0.4280, **delta 0.0101**
-(within the ±0.02 correctness tolerance).  The custom index slightly exceeds the
+(within the ±0.02 correctness tolerance). The custom index slightly exceeds the
 library baseline — both use the same tokeniser (`re.findall(r"\w+", text.lower())`)
 and the same BM25 parameters (k1=1.2, b=0.75); the small gap reflects numerical
 ordering differences in the sort at score ties, not a correctness defect.
@@ -325,25 +325,25 @@ Two input-side optimisations (iterator input + chunk-buffered forward passes)
 and one output-side optimisation (streaming `.npy` write) keep total in-process
 RAM under ~500 MB for an 8.8M-passage encode.
 
-**Input side.**  `encode_corpus()` accepts any iterable of `(pid, text)` pairs
+**Input side.** `encode_corpus()` accepts any iterable of `(pid, text)` pairs
 so the caller never builds a full corpus list in RAM:
 
 ```
 JSONL on disk (3.1 GB)
-    │
-    └─ generator expression — one row at a time
-           │
-           └─ encode_corpus(iter, num_passages=N)
-                  │
-                  ├─ chunk buffer:  batch_size × 100 texts ≈ 15 MB in RAM
-                  ├─ pids list:     8.8M short strings ≈ 140 MB in RAM
-                  └─ embeddings.npy (streamed): 13.5 GB on disk, not in RAM
+ │
+ └─ generator expression — one row at a time
+ │
+ └─ encode_corpus(iter, num_passages=N)
+ │
+ ├─ chunk buffer: batch_size × 100 texts ≈ 15 MB in RAM
+ ├─ pids list: 8.8M short strings ≈ 140 MB in RAM
+ └─ embeddings.npy (streamed): 13.5 GB on disk, not in RAM
 ```
 
-**Output side — why we do NOT use `np.memmap`.**  The obvious implementation
+**Output side — why we do NOT use `np.memmap`.** The obvious implementation
 is `np.lib.format.open_memmap(..., shape=(n, dim))` and write into slices.
 On macOS this stalls at full-corpus scale: every write faults the target page
-resident and the kernel only evicts when forced.  Observed during the first
+resident and the kernel only evicts when forced. Observed during the first
 run of this phase: process physical footprint climbed to 14.3 GB on a 16 GB
 machine, the MPS GPU blocked on `MTLCommandBuffer waitUntilCompleted`, and
 throughput collapsed after ~3 minutes with zero further progress.
@@ -352,14 +352,14 @@ The fix (`retrieval/dense/encoder.py`) writes via a plain file handle:
 
 ```python
 emb_file = emb_path.open("wb")
-np.lib.format.write_array_header_1_0(emb_file, {...})   # valid .npy header
+np.lib.format.write_array_header_1_0(emb_file, {...}) # valid .npy header
 for chunk in batches:
-    vecs = model.encode(chunk, batch_size=512, ...)
-    emb_file.write(vecs.astype(np.float32).tobytes())
+ vecs = model.encode(chunk, batch_size=512, ...)
+ emb_file.write(vecs.astype(np.float32).tobytes())
 ```
 
 The kernel moves written bytes to the page cache (then to disk) without
-counting them against the process's resident memory.  Produced file is a
+counting them against the process's resident memory. Produced file is a
 standard `.npy` readable by `np.load` or `np.lib.format.open_memmap(mode="r")`.
 See `docs/design_decisions.md` entry #16 for the full rationale.
 
@@ -403,7 +403,8 @@ centroids per sub-quantiser). The full written derivation lives in
 
 | Set | nDCG@10 | MRR@10 | Recall@100 | P50 (ms) | P99 (ms) |
 |---|---|---|---|---|---|
-| TREC DL 2020 (m=32) | **0.5262** | 0.8585 | **0.4037** | 1.1 | 11.9 |
+| TREC DL 2020 (m=32, production) | **0.5262** | 0.8585 | **0.4037** | 1.1 | 11.9 |
+| TREC DL 2020 (m=16, baseline)   | 0.4547    | 0.8318 | 0.3388    | 0.5 | 0.7 |
 | TREC DL 2019 | 0.4197 | 0.8033 | 0.2995 | — | — |
 
 ### Results — E5-small (`benchmarks/results/20260426T081538Z_1B_*.json`)
@@ -515,3 +516,150 @@ the better single leg.
 `benchmarks/results/{timestamp}_hybrid_{config_hash8}.json` — top-level
 keys: `ablation`, `alpha_sweep`, `best_alpha`, `ship_gate`,
 `per_query_rrf` (used by `docs/failure_modes.md`).
+
+## Section 5 — Load Testing + Bottleneck Analysis
+
+### Why this section exists
+
+Eval scripts measure single-query latency in isolation; the production
+question is what happens under N concurrent users. A retrieval system
+that's fast at 1 user and unusable at 10 users isn't shippable.
+
+### Setup
+
+Test harness: `tests/load/locustfile.py`. Two `HttpUser` classes:
+`SearchUser` (no role) and `ACLSearchUser` (random role per request).
+Task weights mirror an expected production mix:
+
+| Endpoint | Weight | Fraction |
+|---|---|---|
+| `/search?mode=hybrid` | 6 | 60 % |
+| `/search?mode=bm25` | 2 | 20 % |
+| `/search?mode=dense` | 1 | 10 % |
+| `/health` | 1 | 10 % |
+
+Think time between tasks: `between(0.1, 0.5)` seconds. Query pool: TREC
+DL 2019 + 2020 (97 queries) when `data/queries/*.json` is present, else
+a 20-query built-in fallback.
+
+Service under test: `uvicorn api.main:app --workers 1 --port 8000`,
+single worker, MiniLM IVF-PQ index loaded.
+
+`on_start` checks `/ready` before the first task — ramp-up doesn't
+pollute results with 503s while the index is still loading (~50 s for
+ACL on the first run).
+
+### Sweep
+
+Five runs, 60 s each:
+
+```
+for U in 1 5 10 25 50; do
+  locust -f tests/load/locustfile.py --host http://localhost:8000 \
+    --headless -u $U -r $U --run-time 60s \
+    --csv benchmarks/results/locust_${U}u
+done
+```
+
+### Aggregate results
+
+| Users | RPS | Median ms | P95 ms | P99 ms | Regime |
+|---|---|---|---|---|---|
+| 1 | 2.00 | 140 | 510 | 660 | per-stage cost |
+| 5 | 5.78 | 550 | 1200 | 1400 | transition |
+| 10 | 5.55 | 1600 | 2600 | 2800 | queue saturation |
+| 25 | 6.53 | 3800 | 5400 | 6200 | queue (deeper) |
+| 50 | 7.60 | 7300 | 8300 | 8500 | queue (deepest) |
+
+(`benchmarks/results/locust_{N}u_stats.csv`, "Aggregated" row.)
+
+### Bottleneck shift — between 5 and 10 users
+
+Three signatures crossed together identify the saturation point:
+
+1. **RPS plateau.** 5.78 → 5.55 RPS as users 5 → 10. The system has hit
+   its sustained-throughput ceiling at ~6 RPS.
+2. **Per-endpoint latency convergence.** At 1 user, `/health` is ~2 ms
+   while `/search` is hundreds of ms — three orders of magnitude apart.
+   At 25 users, `/health` rises to ~2,400 ms because it's queued behind
+   search requests. When per-stage cost stops mattering, queue depth
+   is the only signal left.
+3. **P99 grows ~linearly with concurrency above saturation.** 2.8 →
+   6.2 → 8.5 s as users 10 → 25 → 50 — the pure queueing regime.
+
+### Why the shape
+
+Single uvicorn worker = GIL-bound. Every concurrent request lines up
+behind whichever request is currently doing CPU work. With BM25 P99
+at ~720 ms, that's the queue-service-time floor regardless of how
+fast dense or RRF would be in isolation.
+
+### Implications
+
+- **One uvicorn worker = ~7 RPS hard ceiling.** Cannot be exceeded
+  without horizontal workers, regardless of per-query optimisation.
+- **Per-query optimisation only helps in the 1–5 user regime.** The
+  BM25 latency fix (§2) brought single-user latency from 6.1 s to
+  131 ms but didn't raise the saturation RPS — the GIL is the limit.
+- **The < 20 ms P99 ship gate is unreachable** on this architecture
+  for any concurrency. Closing it would require numpy `argpartition`
+  for top-K, a C extension on the BM25 score path, and multi-worker
+  uvicorn with a per-stage process pool.
+
+See `docs/design_decisions.md` #22 for the full bottleneck-shift
+analysis and architectural recommendations.
+
+### Result file convention
+
+`benchmarks/results/locust_{users}u_stats.csv` — Locust's standard
+output. Columns include per-endpoint and aggregate request count,
+failure count, median/mean/min/max response time, RPS, and percentiles
+50/66/75/80/90/95/98/99/99.9/99.99/100.
+
+`benchmarks/results/locust_{users}u_stats_history.csv` — time-series
+of the same stats over the 60-second run; useful for spotting transient
+spikes or warm-up effects.
+
+### `/health` as a pure contention probe
+
+The `/health` endpoint returns one line of JSON. Under load its latency
+is therefore a clean measurement of GIL/queue wait time, separable from
+search work:
+
+| Users | /health median (ms) | Aggregate median (ms) | Search-work residual (ms) |
+|---|---|---|---|
+| 1 | 2 | 140 | ~138 |
+| 5 | 170 | 550 | ~380 |
+| 10 | 600 | 1,600 | ~1,000 |
+| 25 | 2,100 | 3,800 | ~1,700 |
+| 50 | 2,000 | 7,300 | ~5,300 |
+
+At 25 users `/health` takes 2.1 s — a 1,000× slowdown from its 1-user
+latency. None of that is `/health`'s own work; it's all GIL wait time
+behind queued search requests. The `/health` curve quantifies the
+queue, the aggregate curve quantifies queue + search work, and the
+difference is search work alone. This is the diagnostic split that
+separates "the algorithm is slow" from "the worker is contended" in
+production triage.
+
+### Latency budget reconciliation
+
+Sum of per-stage P99 vs full_query P99 (post-optimisation, 100-query
+latency report `20260426T221015Z_1E_*.json`):
+
+| Stage | P99 (ms) |
+|---|---|
+| `bm25_retrieval` | 859.9 |
+| `dense_encode` | 0.04 |
+| `faiss_search` | 13.3 |
+| `rrf_fusion` | 0.39 |
+| `acl_filter` | 3.93 |
+| **Sum of stage P99s** | **877.6** |
+| **`full_query` P99 (root span)** | **862.1** |
+
+The sum overshoots the root by 15 ms because per-stage P99s come from
+different queries — the worst BM25 query and the worst FAISS query
+aren't usually the same query. The two figures agree within ~2%, which
+means **no hidden cost lives outside the six instrumented spans**. This
+is the regression check that the OTel boundary choice (decision #12)
+captures all the work, not just most of it.

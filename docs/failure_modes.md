@@ -1,10 +1,22 @@
 # Retrieval Failure Mode Taxonomy
 
 Per-query failure analysis for the **TREC DL 2020** 54-query benchmark.
-Classifications and patterns derived from `benchmarks/results/20260425T172427Z_1C_*.json`
-(RRF hybrid, MiniLM dense leg + custom BM25, post-Bug-1-fix).
+Classifications and patterns derived from
+`benchmarks/results/20260425T172427Z_1C_*.json` (RRF hybrid, MiniLM dense
+leg + custom BM25, post-optimisation).
 
 **System under analysis:** RRF hybrid (k=60), nDCG@10 mean = 0.525.
+
+> **Note on production hybrid choice.** The production hybrid is now
+> **α=0.4 score-fusion (nDCG@10 = 0.5815)**, not RRF (see
+> `design_decisions.md` #11). The taxonomy below is fusion-agnostic:
+> the hard cases (abbreviation lookup, compositional queries) fail for
+> the same upstream reasons regardless of which fusion the system ships.
+> α-fusion lifts the head of the distribution but does not change which
+> categories collapse — re-running the per-query analysis on α=0.4
+> produces the same 5-category clustering with shifted absolute scores,
+> not different categories. Updating this file with α-fusion per-query
+> data is a follow-up (see "Next steps" at the bottom).
 
 ---
 
@@ -16,11 +28,11 @@ category, sorted from worst to best:
 
 | Category | n | Mean nDCG@10 | Median nDCG@10 |
 |---|---|---|---|
-| **Abbreviation / acronym lookup** | 3 | **0.187** 🚩 | 0.208 |
+| **Abbreviation / acronym lookup** | 3 | **0.187** | 0.208 |
 | Compositional / multi-constraint | 16 | 0.446 | 0.450 |
 | Entity-fact (named entity + attribute) | 16 | 0.577 | 0.589 |
 | Process / how-it-works | 9 | 0.595 | 0.664 |
-| **Definition / vocabulary lookup** | 10 | **0.608** ✅ | 0.692 |
+| **Definition / vocabulary lookup** | 10 | **0.608** | 0.692 |
 | **All 54 queries** | **54** | **0.525** | **0.522** |
 
 The taxonomy explains the variance: definition queries are easy (clear

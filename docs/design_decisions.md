@@ -30,7 +30,7 @@ HNSW offers higher Recall@100 at equivalent nprobe (because graph-based traversa
 
 | Index type | Memory at 8.8M × 384-dim | Recall@100 (nprobe=16) |
 |---|---|---|
-| IVF-PQ (nlist=4096, m=32, nbits=8) | **360 MB measured** (~283 MB PQ-codes + centroids + inverted-list metadata) | **0.40 measured** (MiniLM); see PQ-ceiling experiment in `status.md` |
+| IVF-PQ (nlist=4096, m=32, nbits=8) | **360 MB measured** (~283 MB PQ-codes + centroids + inverted-list metadata) | **0.40 measured** (MiniLM); see PQ-ceiling experiment #21 |
 | HNSW M=32 | ~4.5 GB | ~0.93 (literature) |
 | Flat (exact) | ~13.5 GB | 1.00 |
 
@@ -62,32 +62,32 @@ green.
 **Why the disk-only variant is unambiguously a win we haven't taken:**
 
 - The current `InvertedIndex._index` is `dict[str, array.array('i')]`. At
-  load time, `persistence.load_index()` reconstructs each `array.array`
-  from raw int32 bytes via one `frombytes()` call per term.
+ load time, `persistence.load_index()` reconstructs each `array.array`
+ from raw int32 bytes via one `frombytes()` call per term.
 - Replacing the persistence-layer payload with VByte gaps changes only
-  `save_index()` and `load_index()` — `score_batch()` and every other
-  read path is unchanged because the in-memory `array.array('i')` is
-  identical post-decode.
+ `save_index()` and `load_index()` — `score_batch()` and every other
+ read path is unchanged because the in-memory `array.array('i')` is
+ identical post-decode.
 - Cost: build time +~30 s for VByte encode of 88M postings; load time
-  +~10–15 s for VByte decode. Both are acceptable for a one-time
-  build / process-startup cost.
+ +~10–15 s for VByte decode. Both are acceptable for a one-time
+ build / process-startup cost.
 - Benefit: 1.7 GB → ~430 MB on disk (4× smaller artefact, faster
-  download / S3 transfer / container image).
+ download / S3 transfer / container image).
 
 **Why we shipped the un-wired version anyway:**
 
 1. **The disk size is not a current bottleneck.** 1.7 GB of NRIDX2 fits
-   comfortably and the build/eval pipeline doesn't move this artefact
-   around enough for size to hurt.
+ comfortably and the build/eval pipeline doesn't move this artefact
+ around enough for size to hurt.
 2. **The format change is non-trivial to layer in retroactively.** It
-   requires bumping the format version (NRIDX2 → NRIDX3), keeping a
-   backward-compatible reader for existing v2 indexes, and re-saving the
-   8.8M-doc artefact. We prioritised latency work (decision #17) over
-   storage work in the first ship.
+ requires bumping the format version (NRIDX2 → NRIDX3), keeping a
+ backward-compatible reader for existing v2 indexes, and re-saving the
+ 8.8M-doc artefact. We prioritised latency work (decision #17) over
+ storage work in the first ship.
 3. **The codec is on the shelf, ready.** `VByteCodec.encode/decode`
-   already round-trips arbitrary sorted-int sequences with property-test
-   coverage. Wiring it into `persistence.py` is ~40 lines of code, not a
-   research project.
+ already round-trips arbitrary sorted-int sequences with property-test
+ coverage. Wiring it into `persistence.py` is ~40 lines of code, not a
+ research project.
 
 This is tracked as a follow-up: when we next touch the persistence layer
 (e.g. for a multi-shard index or for delta updates), introduce NRIDX3
@@ -120,16 +120,16 @@ doc_ids upfront.
 **Why we shipped post-retrieval:**
 
 1. **Decouples retrieval from permissions.** Retrieval is "find the best
-   docs for this query"; ACL is "is this caller allowed to see this doc".
-   Mixing them at the FAISS layer makes both harder to reason about.
+ docs for this query"; ACL is "is this caller allowed to see this doc".
+ Mixing them at the FAISS layer makes both harder to reason about.
 2. **One filter for two retrieval legs.** BM25 + dense both flow through
-   `ACLFilter.filter()` after fusion. A FAISS IDSelector wouldn't cover
-   BM25; we'd need a parallel posting-list filter, doubling the surface.
+ `ACLFilter.filter()` after fusion. A FAISS IDSelector wouldn't cover
+ BM25; we'd need a parallel posting-list filter, doubling the surface.
 3. **Measured drop is acceptable for 3 of 5 roles** at *oversample = 2×*
-   (admin / engineer / analyst all drop <25% Recall@100 vs unrestricted).
-   The pathological cases are `sales` (-41%) and `viewer` (-60%) — for
-   those a tactical bump to *oversample = 4× / 8×* recovers most of the
-   loss without an architectural change.
+ (admin / engineer / analyst all drop <25% Recall@100 vs unrestricted).
+ The pathological cases are `sales` (-41%) and `viewer` (-60%) — for
+ those a tactical bump to *oversample = 4× / 8×* recovers most of the
+ loss without an architectural change.
 
 **Per-role Recall@100** (`benchmarks/results/{ts}_1D_*.json`, oversample=2×):
 
@@ -143,6 +143,26 @@ oversample multiplier needed to refill top-K becomes prohibitive and
 the IDSelector path becomes the right call. Cross that bridge when
 the role appears.
 
+**Observation: oversample needs to scale with role restrictiveness.**
+The current 2× oversample is constant across roles, but the right
+oversample is approximately `1 / access_probability_role`:
+
+| Role | Access prob | Theoretical drop @1× | Drop needed for full recovery | We ship 2× |
+|---|---|---|---|---|
+| admin | 100% | 0% | 1× | over-provisioned |
+| engineer | 80% | 20% | 1.25× | over-provisioned |
+| analyst | 65% | 35% | 1.55× | over-provisioned |
+| sales | 50% | 50% | 2.0× | exactly right |
+| viewer | 35% | 65% | 2.85× | under-provisioned |
+
+The measured drops match the theoretical drops minus what 2× oversample
+recovers (roughly 5 percentage points absolute). The pathological case
+is `viewer`: theoretical 65% drop, measured 60% — 2× oversample is
+under-provisioned and has the smallest absolute recovery for the role
+that needs it most. **Tactical fix: per-role oversample (2× default,
+3× viewer, 4× any future role with <30% access). No architectural
+change needed; this is a one-line dispatch in `ACLFilter.filter`.**
+
 ---
 
 ### 11. RRF k=60 (rank fusion) + α=0.4 score fusion as the production hybrid
@@ -154,7 +174,7 @@ unit tests + Hypothesis property tests pass.
 **RRF formula:**
 
 ```
-score(d) = Σ_i 1 / (k + rank_i(d))     k = 60
+score(d) = Σ_i 1 / (k + rank_i(d)) k = 60
 ```
 
 For each system *i* the document at rank *r* contributes `1 / (k + r)`.
@@ -169,12 +189,12 @@ at modest ranks beats a doc seen only by one system at rank 1.
 **Why RRF is the conservative-default fusion:**
 
 - No score normalisation. BM25 scores are unbounded; dense (cosine/L2)
-  scores live in a different scale entirely. Score-based fusion needs
-  either min-max normalisation (which is per-query and noisy) or a
-  trained weighting (decision boundary depends on the score
-  distributions of both systems).
+ scores live in a different scale entirely. Score-based fusion needs
+ either min-max normalisation (which is per-query and noisy) or a
+ trained weighting (decision boundary depends on the score
+ distributions of both systems).
 - RRF only uses ranks, which are distribution-agnostic. A new encoder
-  or a re-tuned BM25 doesn't break the fusion.
+ or a re-tuned BM25 doesn't break the fusion.
 
 **But α-fusion now wins on this system:** with the m=32 dense leg from
 decision #20, hybrid_eval shows:
@@ -200,6 +220,20 @@ without retuning α.
 **Re-evaluation trigger:** any change to the dense leg (encoder, index
 family, m, nbits) should re-run the α sweep — the optimal α tracks the
 strength of the dense signal.
+
+**Observation: the α optimum is metric-dependent.** The sweep produces
+three distinct optima depending on which metric you measure (DL2020):
+
+| Metric | Best α | Value | What it implies |
+|---|---|---|---|
+| nDCG@10 | 0.4 | 0.5815 | top-10 ordering quality favours the dense leg (60% weight) |
+| Recall@100 | 0.5 | 0.5499 | top-100 coverage benefits from a balanced union |
+| MRR@10 | 0.6 | 0.9259 | first-relevant rank favours BM25 (60% weight) — exact-match queries land at rank 1 more reliably under BM25 than dense |
+
+α=0.4 is the production pick because nDCG@10 is the primary headline
+metric. If a downstream application weights MRR (e.g. a single-answer
+QA system), α=0.6 would be the right choice — and the same fusion code
+covers it.
 
 ---
 
@@ -280,39 +314,39 @@ embeddings[write_ptr:end] = vecs
 ```
 
 On macOS, writing to a large memmap *faults every target page resident*,
-and the kernel only evicts those pages when it needs to.  Observed on a
+and the kernel only evicts those pages when it needs to. Observed on a
 16 GB machine during a full-corpus run:
 
 - Process physical footprint climbed to **14.3 GB** (peak 15.4 GB) — effectively
-  the entire memmap became resident.
+ the entire memmap became resident.
 - `sample(1)` stack trace: blocked in `MPSStream::synchronize` →
-  `[_MTLCommandBuffer waitUntilCompleted]` → `_pthread_cond_wait`.  The GPU
-  was stalled waiting for the host memory system.
+ `[_MTLCommandBuffer waitUntilCompleted]` → `_pthread_cond_wait`. The GPU
+ was stalled waiting for the host memory system.
 - CPU utilisation collapsed from 87% (startup) to 7% (stalled).
 - No progress output after the first chunk in over 3 minutes.
 
 **Chosen:** write the .npy file via a plain file handle, one chunk per
-`file.write()`.  The kernel moves written pages to the page cache and
+`file.write()`. The kernel moves written pages to the page cache and
 (asynchronously) to disk without making them part of the process's
-resident-memory accounting.  Process footprint stays bounded by the chunk
+resident-memory accounting. Process footprint stays bounded by the chunk
 buffer plus model + pids.
 
 ```python
 emb_file = emb_path.open("wb")
 np.lib.format.write_array_header_1_0(emb_file, {
-    "descr": np.lib.format.dtype_to_descr(np.dtype(np.float32)),
-    "fortran_order": False,
-    "shape": (n, self.embedding_dim),
+ "descr": np.lib.format.dtype_to_descr(np.dtype(np.float32)),
+ "fortran_order": False,
+ "shape": (n, self.embedding_dim),
 })
 for each chunk:
-    vecs = model.encode(chunk_texts, ...)      # GPU → host
-    emb_file.write(vecs.astype(np.float32, copy=False).tobytes())
-    if device == "mps":
-        torch.mps.empty_cache()                # release MPS allocator buffers
+ vecs = model.encode(chunk_texts, ...) # GPU → host
+ emb_file.write(vecs.astype(np.float32, copy=False).tobytes())
+ if device == "mps":
+ torch.mps.empty_cache() # release MPS allocator buffers
 ```
 
 The produced file is a standard `.npy` — downstream `load_embeddings()`
-still uses `np.lib.format.open_memmap(..., mode="r")`.  Read-side mmap is
+still uses `np.lib.format.open_memmap(..., mode="r")`. Read-side mmap is
 fine because callers only touch embeddings they're actively using (FAISS
 training on a 100K sample, then one-pass `add()` through the whole
 matrix).
@@ -321,22 +355,22 @@ matrix).
 labelled here so anyone reading the diff can map the code to this rationale:
 
 1. **Output path:** `np.lib.format.open_memmap(..., shape=...)[slice] = vecs`
-   → `np.lib.format.write_array_header_1_0(emb_file, {...})` once at the
-   start, then `emb_file.write(vecs.tobytes())` per chunk. Produces a
-   byte-identical `.npy` file; only the *write* path differs.
+ → `np.lib.format.write_array_header_1_0(emb_file, {...})` once at the
+ start, then `emb_file.write(vecs.tobytes())` per chunk. Produces a
+ byte-identical `.npy` file; only the *write* path differs.
 2. **Chunk granularity:** `chunk_size = batch_size * 100` (default 25,600)
-   → `chunk_size = batch_size * chunk_multiplier` with default
-   `chunk_multiplier=8` (default 4,096). Smaller chunks mean fewer accumulated
-   forward passes per `model.encode()` sync — bounds MPS allocator buildup
-   between explicit cache flushes. Exposed as `--chunk-multiplier` CLI flag
-   in `encode_corpus.py` for per-machine tuning.
+ → `chunk_size = batch_size * chunk_multiplier` with default
+ `chunk_multiplier=8` (default 4,096). Smaller chunks mean fewer accumulated
+ forward passes per `model.encode()` sync — bounds MPS allocator buildup
+ between explicit cache flushes. Exposed as `--chunk-multiplier` CLI flag
+ in `encode_corpus.py` for per-machine tuning.
 3. **MPS cache release:** added `torch.mps.empty_cache()` call between chunks
-   when `device.startswith("mps")`. Without this, the MPS allocator caches
-   intermediate buffers across forward passes and the process footprint grows
-   monotonically until the OS kills the run.
+ when `device.startswith("mps")`. Without this, the MPS allocator caches
+ intermediate buffers across forward passes and the process footprint grows
+ monotonically until the OS kills the run.
 
 `load_embeddings()` (read side) is unchanged — it still uses
-`np.lib.format.open_memmap(mode="r")`.  Read-only mmap is safe.
+`np.lib.format.open_memmap(mode="r")`. Read-only mmap is safe.
 
 **Throughput impact (observed).**
 
@@ -354,13 +388,13 @@ physical RAM. The streaming write is slightly slower in the smoke regime
 at the scale where it matters.
 
 **Alternative we did NOT pick: `mmap.madvise(MADV_DONTNEED)`** after each
-write.  macOS `MADV_DONTNEED` is best-effort and doesn't reliably evict
+write. macOS `MADV_DONTNEED` is best-effort and doesn't reliably evict
 dirty pages; the streaming write is simpler and has no edge cases.
 
 **When the original memmap path is the right choice.** On Linux with ample
 RAM headroom, or on CUDA hosts where the GPU memory is separate from the
 file-cache pool, `np.memmap` slice-assignment is fine — the kernel evicts
-clean pages aggressively and the process footprint stays bounded.  The
+clean pages aggressively and the process footprint stays bounded. The
 streaming `.npy` write is the more conservative default; it loses nothing
 in those environments and is necessary on macOS at corpus scale.
 
@@ -385,9 +419,9 @@ the spec's < 20 ms P99 ship-gate.
 The algorithm was correct (only walked posting lists, not the whole
 corpus). The cost came from:
 1. **No stopword filter** — query `"the"` pulled 7,714,196 postings (87 %
-   of the corpus); 11 query tokens produced 7.9 M unique candidates.
+ of the corpus); 11 query tokens produced 7.9 M unique candidates.
 2. **Pure-Python loops** — at ~1 µs per Python op, scoring ~10 M posting
-   entries adds up to 10 s.
+ entries adds up to 10 s.
 
 **Fixes applied (in priority order, highest impact first):**
 
@@ -401,7 +435,7 @@ vocabularies stay consistent. Required a full reindex.
 ```python
 STOPWORDS: frozenset[str] = _load_stopwords()
 def tokenize(text: str) -> list[str]:
-    return [t for t in re.findall(r"\w+", text.lower()) if t not in STOPWORDS]
+ return [t for t in re.findall(r"\w+", text.lower()) if t not in STOPWORDS]
 ```
 
 This single change collapses the candidate set from 7.9 M → ~1 M for the
@@ -412,18 +446,18 @@ hardest queries (~10× reduction) and removes the dominant source of work.
 Replaced the Python double-loop with:
 
 1. **Persistent per-index numpy caches** built lazily on first call: a
-   dense int32 `_dl_array` indexed by doc_id (~35 MB) and a float64
-   `_score_buffer` (~70 MB) pre-allocated for sparse scatter-add.
+ dense int32 `_dl_array` indexed by doc_id (~35 MB) and a float64
+ `_score_buffer` (~70 MB) pre-allocated for sparse scatter-add.
 2. **Per-term feature compute is fully vectorised:** `np.frombuffer` for a
-   zero-copy view of the `array.array('i')` posting buffer, then strided
-   `[0::2]` (doc_ids) and `[1::2]` (tfs), then numpy ops for IDF × TF_norm.
+ zero-copy view of the `array.array('i')` posting buffer, then strided
+ `[0::2]` (doc_ids) and `[1::2]` (tfs), then numpy ops for IDF × TF_norm.
 3. **Single `np.bincount` over concatenated arrays** is the scatter-add —
-   instead of T separate `np.add.at` calls (which serialise on collisions)
-   we concatenate per-term `(doc_ids, contribution)` arrays and call
-   `np.bincount(flat_ids, weights=flat_contribs, minlength=N)` once.
+ instead of T separate `np.add.at` calls (which serialise on collisions)
+ we concatenate per-term `(doc_ids, contribution)` arrays and call
+ `np.bincount(flat_ids, weights=flat_contribs, minlength=N)` once.
 
 ```python
-flat_ids     = np.concatenate(per_term_doc_ids)
+flat_ids = np.concatenate(per_term_doc_ids)
 flat_contribs = np.concatenate(per_term_contributions)
 scores += np.bincount(flat_ids, weights=flat_contribs, minlength=len(scores))
 ```
@@ -482,6 +516,29 @@ optimisation (above) cuts P99 to 536 ms; further wins require either a
 C extension or a min-should-match prefilter (WAND-style). Defer to
 a follow-up.
 
+**Side-effect: every other stage got faster too.** Per-stage P99 from
+the latency report, pre vs post BM25 fix:
+
+| Stage | Pre | Post | Change |
+|---|---|---|---|
+| `bm25_retrieval` | 25,669 ms | 859.9 ms | 30× |
+| `dense_encode` | 0.07 ms | 0.04 ms | 1.7× |
+| `faiss_search` | 48.7 ms | 13.3 ms | 3.7× |
+| `rrf_fusion` | 1.83 ms | 0.39 ms | 4.7× |
+| `acl_filter` | 21.4 ms | 3.93 ms | 5.4× |
+
+Nothing in `dense_encode`, `faiss_search`, `rrf_fusion`, or `acl_filter`
+was changed. The improvement came entirely from BM25 no longer running
+before them and trashing the GC + memory-bandwidth shared resource. The
+"21 ms ACL filter P99" we'd reported earlier as an ACL problem was
+**GC pressure from BM25's 7 GB transient candidate set**, not ACL filter
+cost — once BM25 stopped allocating that, ACL dropped to its true cost
+of ~4 ms P99. **General principle: per-stage profiling can lie when
+stages share resources. Optimising one stage can leak performance gains
+into stages whose code is unchanged. Validate "this stage is slow"
+claims by checking whether neighbouring stages also speed up after the
+fix — if they do, the bottleneck was shared, not local.**
+
 ---
 
 ### 18. nprobe = 16 (chosen 2026-04-26)
@@ -506,7 +563,9 @@ The full sweep (`benchmarks/results/20260425T165752Z_1B_*.json`):
 - **The recall ceiling is PQ, not nprobe.** Doubling nprobe to 32 only gains +0.009 recall; doubling again to 64 gains +0.004. The plateau at ~0.33 across 64× nprobe means the true neighbours are being filtered out by the PQ approximate distance, not by under-searched clusters. Higher nprobe cannot fix this; only lowering PQ reconstruction error (larger `m`) or removing PQ (IVF-Flat) can.
 - **Spec recommendation alignment.** The spec defaults to nprobe=16 and the data confirms it's the right operating point on this corpus + this index configuration.
 
-**What this does NOT solve:** Recall@100 is still 0.321 (vs the 0.75 ship-gate target). That gap is the PQ ceiling and is addressed in a separate decision about `m`/index type. The nprobe choice is independent: even if we switched to IVF-Flat tomorrow, nprobe=16 would still be the right operating point for the IVF clustering layer.
+**What this does NOT solve:** Recall@100 is 0.321 at m=16 / 0.404 at m=32 — both well below the 0.75 ship-gate target. The PQ-ceiling experiment (#21) showed that ~50 % of the m=16-to-Flat gap is PQ reconstruction error and the rest is encoder representation; nprobe is independent of both. Even at IVF-Flat, nprobe=16 would still be the right operating point for the IVF clustering layer; the recall ceiling moves only with m or the encoder.
+
+**Open: nprobe under m=32 has not been re-swept.** The optimum under m=32 might shift slightly (likely 8 or 16 still, but unverified). See "Next steps" at the bottom of this file.
 
 ---
 
@@ -516,9 +575,12 @@ The full sweep (`benchmarks/results/20260425T165752Z_1B_*.json`):
 
 The naive prior is "larger model is better" — E5-small-v2 has 33 M parameters vs MiniLM's 22 M, and the literature usually has E5 ~3 nDCG points ahead of MiniLM on MS MARCO. The measured data on this system says the opposite.
 
-**Head-to-head (DL2020, 54 queries, identical FAISS IVF-PQ params nlist=4096/m=16/nbits=8/nprobe=16):**
+**Head-to-head (DL2020, 54 queries, identical FAISS IVF-PQ params
+nlist=4096 / m=16 / nbits=8 / nprobe=16). These numbers are from the
+m=16 baseline — E5 has not been re-evaluated under m=32 production
+parameters.**
 
-| Metric | MiniLM-L6-v2 | E5-small-v2 | Winner |
+| Metric | MiniLM-L6-v2 (m=16) | E5-small-v2 (m=16) | Winner |
 |---|---|---|---|
 | nDCG@10 | **0.4547** | 0.4281 | MiniLM +0.027 (+6%) |
 | MRR@10 | **0.8318** | 0.7579 | MiniLM +0.074 (+10%) |
@@ -559,21 +621,21 @@ The standard heuristic is `nlist ≈ √N`. For N = 8.8M, √N ≈ 2966.
 Round up to a power of 2 → 4096. Two reasons for the power-of-2 round:
 
 1. **Cluster size.** 8.8M / 4096 ≈ 2,150 docs per cluster on average.
-   This is the right ballpark for IVF: small enough that scanning all
-   docs in `nprobe` clusters is fast, large enough that each cluster
-   captures a meaningful semantic neighbourhood. Going to nlist = 8192
-   would halve cluster size to ~1,075 docs — search becomes faster but
-   recall at low nprobe drops sharply because fewer candidate clusters
-   are likely to contain a query's neighbours. Going to nlist = 2048
-   doubles cluster size → slower scans for the same nprobe.
+ This is the right ballpark for IVF: small enough that scanning all
+ docs in `nprobe` clusters is fast, large enough that each cluster
+ captures a meaningful semantic neighbourhood. Going to nlist = 8192
+ would halve cluster size to ~1,075 docs — search becomes faster but
+ recall at low nprobe drops sharply because fewer candidate clusters
+ are likely to contain a query's neighbours. Going to nlist = 2048
+ doubles cluster size → slower scans for the same nprobe.
 
 2. **k-means training cost and quality.** k-means on 100K samples
-   produces 4096 centroids of about 24 samples each in expectation —
-   marginal for k-means clustering quality (FAISS warns that 39× nlist
-   is the recommended sample count, i.e. ~160K). We accept this warning
-   because empirical recall on the sweep doesn't show degradation;
-   re-training with 200K is a tactical follow-up that may move
-   Recall@100 up by a few percentage points.
+ produces 4096 centroids of about 24 samples each in expectation —
+ marginal for k-means clustering quality (FAISS warns that 39× nlist
+ is the recommended sample count, i.e. ~160K). We accept this warning
+ because empirical recall on the sweep doesn't show degradation;
+ re-training with 200K is a tactical follow-up that may move
+ Recall@100 up by a few percentage points.
 
 **`m = 32` — number of PQ sub-quantisers (production)**
 
@@ -582,16 +644,16 @@ dimensions each. Each sub-vector is then quantised to a one-byte code
 (8 bits → 256 centroids). The trade-off:
 
 - **`m = 8`** → 48-dim sub-vectors. Each sub-vector carries more variance,
-  so 256 centroids isn't enough to represent it well; reconstruction
-  error grows. Memory drops to ~70 MB.
+ so 256 centroids isn't enough to represent it well; reconstruction
+ error grows. Memory drops to ~70 MB.
 - **`m = 16`** → 24-dim sub-vectors. The original choice and FAISS's
-  default recommendation. 209 MB measured, **R@100 = 0.339**.
+ default recommendation. 209 MB measured, **R@100 = 0.339**.
 - **`m = 32` (production)** → 12-dim sub-vectors. Better reconstruction
-  per sub-vector. 360 MB measured, **R@100 = 0.404** — +19% recall vs
-  m=16 at 1.7× the size, P99 still inside the 20 ms latency budget.
-  Chosen after the PQ-ceiling experiment (#21).
+ per sub-vector. 360 MB measured, **R@100 = 0.404** — +19% recall vs
+ m=16 at 1.7× the size, P99 still inside the 20 ms latency budget.
+ Chosen after the PQ-ceiling experiment (#21).
 - **`m = dim`** = 384 → 1-dim sub-vectors, equivalent to per-dim scalar
-  quantisation. Loses the joint variance-capturing property of PQ.
+ quantisation. Loses the joint variance-capturing property of PQ.
 
 m=32 was selected over m=16 once the PQ-ceiling sweep confirmed that
 the 256 MB / vector budget paid for itself in retrieval quality.
@@ -601,10 +663,10 @@ the 256 MB / vector budget paid for itself in retrieval quality.
 2^nbits = 2^8 = 256 centroids per sub-quantiser. This is the standard.
 
 - **`nbits = 4`** → 16 centroids per sub-quantiser. Memory halves but
-  reconstruction error roughly doubles — borderline-unusable for retrieval.
+ reconstruction error roughly doubles — borderline-unusable for retrieval.
 - **`nbits = 12`** → 4096 centroids. Memory grows 1.5×; codebook training
-  on 100K samples per sub-quantiser is borderline (need ~5000 samples per
-  centroid for stable k-means; we have only ~25 at nbits=12).
+ on 100K samples per sub-quantiser is borderline (need ~5000 samples per
+ centroid for stable k-means; we have only ~25 at nbits=12).
 
 `nbits = 8` is the only practical choice for 100K training samples.
 
@@ -660,43 +722,285 @@ should unlock recall.
 **Findings:**
 
 1. **m=16 → m=32 closes ~50% of the m=16 → Flat gap.** Doubling the
-   sub-quantiser count recovers +19% Recall@100 (0.339 → 0.404 vs Flat
-   0.418) and +16% nDCG@10. The information budget per vector doubles
-   from 128 bits (m=16) to 256 bits (m=32), still 48× compressed vs the
-   original 12,288-bit float32 vector.
+ sub-quantiser count recovers +19% Recall@100 (0.339 → 0.404 vs Flat
+ 0.418) and +16% nDCG@10. The information budget per vector doubles
+ from 128 bits (m=16) to 256 bits (m=32), still 48× compressed vs the
+ original 12,288-bit float32 vector.
 
 2. **SQ8 ≈ IVF-Flat at 25% the size.** Recall@100 0.4179 vs Flat 0.4185
-   (within 0.001). Scalar-quantising each of the 384 dims to 8 bits is
-   essentially lossless for retrieval — but P99 = 54 ms blows the 20 ms
-   gate, so SQ8 is not production-viable for this latency budget.
+ (within 0.001). Scalar-quantising each of the 384 dims to 8 bits is
+ essentially lossless for retrieval — but P99 = 54 ms blows the 20 ms
+ gate, so SQ8 is not production-viable for this latency budget.
 
 3. **The "PQ accounts for 100% of the gap" claim was overclaim.** PQ
-   accounts for ~50% of the gap from m=16 to Flat (which is itself the
-   index-quality ceiling). The remaining gap from Flat (R@100 0.418) to
-   the spec's 0.75 expectation is encoder + sparse-judged-qrels, not PQ.
-   MiniLM-L6-v2 on TREC DL 2020 with judged-only-recall has a hard ceiling
-   around 0.42 regardless of index family. Closing that gap requires a
-   stronger encoder (E5-large, BGE-large), denser qrel coverage, or
-   accepting that judged-only-recall isn't measuring the true ceiling.
+ accounts for ~50% of the gap from m=16 to Flat (which is itself the
+ index-quality ceiling). The remaining gap from Flat (R@100 0.418) to
+ the spec's 0.75 expectation is encoder + sparse-judged-qrels, not PQ.
+ MiniLM-L6-v2 on TREC DL 2020 with judged-only-recall has a hard ceiling
+ around 0.42 regardless of index family. Closing that gap requires a
+ stronger encoder (E5-large, BGE-large), denser qrel coverage, or
+ accepting that judged-only-recall isn't measuring the true ceiling.
 
 4. **Production pick: m=32.** Only variant that improves recall meaningfully
-   while staying inside the 20 ms P99 latency gate. Storage cost (360 MB
-   vs 209 MB) is negligible. SQ8 is the latency-relaxed alternative if a
-   future deployment can budget 50+ ms P99. IVF-Flat is the diagnostic
-   ceiling reference, never a production candidate.
+ while staying inside the 20 ms P99 latency gate. Storage cost (360 MB
+ vs 209 MB) is negligible. SQ8 is the latency-relaxed alternative if a
+ future deployment can budget 50+ ms P99. IVF-Flat is the diagnostic
+ ceiling reference, never a production candidate.
+
+5. **m=32 is essentially at the index-quality ceiling.** Recall@100
+ 0.4037 vs IVF-Flat 0.4185 = **96.5% of the achievable recall**. The
+ remaining 3.5% gap to Flat costs 65× more disk (360 MB → 13 GB) and
+ blows the latency budget by 40×. The next ~3% of recall is not
+ index-side work — it's encoder-side (E5-large, BGE-large, denser
+ qrels). A future m=64 sweep would buy <2% R@100 in exchange for
+ proportional latency and storage growth, so it's not worth running.
 
 **What this changes:**
 
 - The production FAISS index is now `IVF-PQ nlist=4096, m=32, nbits=8`
-  (decision #20 updated).
+ (decision #20 updated).
 - Hybrid α-fusion was re-swept against the m=32 dense leg; best α shifted
-  from 0.8 to 0.4, and α=0.4 fusion (nDCG@10 0.5815) now beats RRF
-  (0.5240). RRF (rank-fusion) is conservative; with a strong dense leg,
-  score-fusion captures more of the joint signal. See #11.
+ from 0.8 to 0.4, and α=0.4 fusion (nDCG@10 0.5815) now beats RRF
+ (0.5240). RRF (rank-fusion) is conservative; with a strong dense leg,
+ score-fusion captures more of the joint signal. See #11.
 
 **What this does NOT change:**
 
 - Dense Recall@100 > 0.75 ship gate still fails. Even Flat caps at 0.42.
-  Closing the gap requires a stronger encoder, not a richer index.
+ Closing the gap requires a stronger encoder, not a richer index.
 - The encoder choice (#19, MiniLM). E5 has not been re-run with m=32; the
-  m=16 head-to-head verdict stands but is qualified.
+ m=16 head-to-head verdict stands but is qualified.
+---
+
+## Serving + Observability
+
+### 12. OpenTelemetry stage boundaries — one span per independently-tunable stage
+
+**Decision:** each stage with measurable cost (>1 ms expected at scale) gets
+its own OTel span. The hierarchy is one root span per HTTP request with
+five child spans for the retrieval stages.
+
+**Spans:**
+
+| Span | Wraps | Why traced separately |
+|---|---|---|
+| `full_query` (root) | the entire `/search` handler | end-to-end latency, request_id stamp |
+| `bm25_retrieval` | `BM25Retriever.retrieve_timed` | dominant latency in our profile |
+| `dense_encode` | `SentenceEncoder.encode_query` | encoder model swap is independent |
+| `faiss_search` | `FAISSIVFPQIndex.search` | nprobe is a query-time knob; latency tracks it |
+| `rrf_fusion` | `rrf.fuse_scored` | sub-ms but tunable (k parameter) |
+| `acl_filter` | `ACLFilter.filter` | sub-ms but selectivity-dependent |
+
+**Rationale — "one span per independently tunable component":** if a stage
+has a knob (nprobe, k, oversample, encoder model) that can be changed
+without rebuilding everything else, it deserves its own span so the trace
+shows the cost of that knob in isolation. Tokenisation inside BM25 isn't
+a separate span (it's part of `bm25_retrieval`); memmap reads inside FAISS
+add aren't traced (they're file I/O, not a user-controllable stage).
+
+**Standard attributes set on every span:** `query.text` (truncated to 200
+chars to keep span size bounded), `query.top_k`, `span.duration_ms`
+(measured with `time.perf_counter()`, not OTel's clock — sub-ms accuracy
+matters at our latency budget).
+
+**Why it's safe to leave on in production:**
+- `BatchSpanProcessor` ships spans asynchronously; the request path doesn't
+  block on the exporter.
+- If the OTLP collector is unreachable, `init_tracing()` falls back to a
+  no-op tracer. A broken Jaeger never breaks search.
+- `SimpleSpanProcessor` (test-only) blocks on export — used only with
+  `InMemorySpanExporter` in the unit tests.
+
+**Where this pays off:** decision #17 (BM25 latency optimisation) was only
+provable because the per-stage spans gave us the pre/post breakdown — the
+same per-stage report at pre-fix time showed BM25 at 8,578 ms P50 while
+every other stage was sub-50 ms. Without span boundaries we'd have known
+"the system was slow" but not "BM25 specifically was 99% of the cost."
+
+---
+
+### 13. Locust over wrk / ab / k6 for load testing
+
+**Decision:** use Locust for the throughput sweep (1/5/10/25/50 concurrent
+users), not `wrk`, `ab`, or `k6`.
+
+**Trade-offs:**
+
+| Tool | Pros | Cons |
+|---|---|---|
+| `wrk` | C, very fast, low resource footprint | Lua scripting, awkward for varied request bodies and weighted task mixes |
+| `ab` (Apache Bench) | Standard, simple | No request weighting, single endpoint per run |
+| `k6` | JavaScript, modern, good UI | Requires Node.js runtime, JS ecosystem |
+| **Locust** | Python-native, runs in the same venv as the project, declarative `@task` weights, real query distribution from the actual TREC files | Higher resource footprint than `wrk`; one Locust user ≠ one OS thread (gevent), so absolute load numbers depend on the harness machine |
+
+**Why Locust wins for this project:**
+
+1. **Same Python environment.** No new runtime, no new package manager.
+   `tests/load/locustfile.py` imports the same TREC query loader the
+   eval scripts use; the load test exercises the same query distribution
+   the eval reports.
+2. **Realistic task weighting.** `@task(6)` hybrid / `@task(2)` BM25 /
+   `@task(1)` dense / `@task(1)` health is a one-line declaration.
+3. **`on_start` checks `/ready` before issuing tasks** — the ramp-up
+   doesn't pollute results with 503s while the index is still loading.
+
+**The harness-vs-system-under-test distinction:** Locust on the same Mac
+as the API competes for cores. The numbers in `methodology.md` §5 are
+"what one uvicorn worker on a 16 GB Mac sustains under N Locust users on
+the same machine" — not absolute throughput limits of the algorithms.
+For absolute numbers, run Locust on a separate host.
+
+---
+
+### 14. Streaming corpus I/O — generators over lists
+
+**Decision:** `evaluation/encode_corpus.py` and `evaluation/bm25_eval.py`
+both stream the 8.8M-passage corpus through generators, never materialising
+the whole thing as a Python list.
+
+**Memory math:**
+
+```
+list[(pid, text)] for 8.8M passages =
+    list overhead (~80 MB ptrs) + 8.8M tuples (56 B each = 490 MB) +
+    8.8M pid strs (40 B avg = 350 MB) + 8.8M text strs (60 B avg = 530 MB)
+    ≈ 1.45 GB just for the corpus container, before any indexing work
+```
+
+```
+generator yielding (pid, text) one at a time =
+    one tuple alive at a time = ~120 B
+```
+
+**Where this matters:**
+- **`encode_corpus.py`** — streams rows from HuggingFace Arrow (memory-mapped)
+  or from `data/msmarco_passages.jsonl` directly into the encoder's chunk
+  buffer. Combined with the streaming `.npy` write (decision #16), peak
+  in-process memory is ~400 MB regardless of corpus size.
+- **`bm25_eval.py`** — `iter_corpus(limit)` yields `(int_pid, text)` from
+  JSONL. Combined with the byte-aligned worker shards, each parallel build
+  worker's RSS stays at ~700 MB even though the cumulative corpus is 3.1 GB.
+
+**The pattern:** every public API that consumes a corpus accepts an
+iterable of `(pid, text)`, not a list. `SentenceEncoder.encode_corpus`
+takes an `Iterable[(pid, text)]` and a `num_passages: int | None`
+fallback (required when the iterable has no `__len__`, as generators
+don't). HF `Dataset` objects do have `__len__`, so the smoke-test path
+just passes the dataset directly.
+
+**Operational consequence:** the build pipeline runs on a 16 GB Mac
+without swap pressure. The same code on a 4-core/8 GB instance also
+works because nothing scales linearly with corpus size in process
+memory.
+
+---
+
+### 22. Bottleneck shift interpretation — single uvicorn worker
+
+**Source data:** `benchmarks/results/locust_{1,5,10,25,50}u_stats.csv`
+(60 % hybrid / 20 % BM25 / 10 % dense / 10 % health, 0.1–0.5 s think time,
+single uvicorn worker, MiniLM IVF-PQ index).
+
+**Three-phase pattern observed across the user sweep:**
+
+| Concurrency | Aggregate RPS | Median ms | P99 ms | Regime |
+|---|---|---|---|---|
+| 1 user | 2.00 | 140 | 660 | per-stage cost |
+| 5 users | 5.78 | 550 | 1400 | transition |
+| 10 users | 5.55 | 1600 | 2800 | queue saturation |
+| 25 users | 6.53 | 3800 | 6200 | queue (deeper) |
+| 50 users | 7.60 | 7300 | 8500 | queue (deepest) |
+
+**The shift happens between 5 and 10 users**, identifiable by three
+quantitative signatures crossed simultaneously:
+
+1. **Aggregate RPS plateaus.** It rises 5.78 → 5.55 — actually falls
+   slightly — when users double from 5 to 10. The system has hit its
+   sustained-throughput ceiling at ~6 RPS. After that, more users only
+   means more waiting in the queue.
+2. **Per-endpoint latencies converge.** At 1 user, `/health` is 2 ms
+   and `/search` is hundreds of ms — orders of magnitude apart. At
+   25 users, even `/health` is 2,400 ms because it's queued behind
+   search requests. **When per-stage cost stops mattering, queue depth
+   is the only thing left.**
+3. **P99 grows roughly linearly with concurrency above the saturation
+   point.** 2.8 → 6.2 → 8.5 s as users go 10 → 25 → 50.
+
+**Why this shape:**
+
+A single uvicorn worker holds the GIL. Every concurrent request lines up
+behind whichever request is currently doing CPU work. With BM25 P99 at
+~720 ms, that's the queue-service-time cap regardless of how short
+dense or RRF would be in isolation.
+
+**Implications for the architecture:**
+
+- **Single uvicorn worker = ~7 RPS hard ceiling.** Cannot be exceeded
+  without horizontal workers, regardless of per-query optimisation.
+- **Per-query optimisation only helps in the 1–5 user regime.** The BM25
+  latency optimisation (decision #17, 17.6 s → 720 ms P99) bought
+  comfortable single-user latency but did not raise the saturation
+  throughput meaningfully — the GIL is the limit, not the per-query
+  cost.
+- **The < 20 ms P99 ship gate is unreachable** on this architecture for
+  any concurrency. Closing the gap requires: (a) `numpy.argpartition`
+  for top-K instead of `sorted`, (b) BM25 score path in C extension,
+  (c) multi-worker uvicorn with a per-stage process pool.
+
+**Why it's worth measuring anyway:** the interesting story is not "we
+hit the gate" but "we measured where the gate fails, identified each
+regime, and quantified the architectural change required to clear it."
+
+---
+
+## Next steps — surgical fixes for known measurement gaps
+
+These are the experiments and edits that would tighten the rationale in
+this document without rewriting any architectural choice. Each is small,
+each has a clear data-collection plan, none change the production code.
+
+1. **Re-sweep nprobe under m=32** (M2 in the audit). The `nprobe=16`
+   choice was made on the m=16 sweep. Run `dense_eval.py --sweep` against
+   the m=32 production index and confirm the elbow hasn't moved. Likely
+   outcome: still nprobe=16 ± one step. Cost: ~30 minutes of eval time.
+2. **Re-run the encoder head-to-head under m=32** (covers the qualified
+   note in #19). MiniLM's m=32 numbers exist; E5-small needs to be
+   re-encoded and re-evaluated with the new index. Cost: 9–10 hours of
+   E5 encode time + 2 minutes of FAISS rebuild + eval. Until then, the
+   m=16 head-to-head numbers in #19 stand but should be read as
+   directional, not authoritative for the production regime.
+3. **Re-run the per-query failure analysis on α=0.4 fusion**
+   (`docs/failure_modes.md`). The five-category taxonomy is fusion-agnostic,
+   but the absolute scores in each category will shift. Cost: re-run
+   `hybrid_eval.py` (already done) + manual reclassification (~1 hour).
+4. **Test corruption recovery with injected corruption.** The mechanism
+   (`validate_faiss_index` → `rebuild_index` → fall back to BM25-only)
+   exists in `api/main.py` lifespan; we have not actually written a
+   test that flips a byte in `index.faiss`, restarts the API, and probes
+   `/search?mode=hybrid` for graceful 503 + `/search?mode=bm25` for
+   continued 200. Add to `tests/integration/`. Cost: ~50 lines of test
+   code.
+5. **Quantify the qrels-coverage hypothesis** (M1). The Flat ceiling at
+   R@100 = 0.4185 may reflect sparse TREC qrels, not the encoder. A
+   denser-judgement set (e.g. MS MARCO dev with full triples) would
+   show whether dense Recall is encoder-limited or qrels-limited.
+   Cost: re-run dense eval against MS MARCO dev qrels (~30 minutes).
+6. **Capture pre-optimisation Locust data** (M3). The bottleneck-shift
+   analysis (#22) assumes the saturation throughput would have been the
+   same pre-fix; we never measured it. A one-time Locust sweep against
+   a checkout of the pre-fix code would convert the assertion into a
+   measurement. Low priority — the conclusion is robust to the missing
+   data — but the rigour-completist would close it.
+7. **Wire VByte into NRIDX3 persistence** (decision #9). One-time
+   format bump, ~40 lines of code, ~4× disk reduction (1.7 GB → 430 MB).
+   Worth doing the next time we touch persistence for any other reason
+   (multi-shard index, delta updates, etc.).
+8. **Per-role oversample dispatch in `ACLFilter`** (decision #10).
+   Constant 2× over-provisions the permissive roles and under-provisions
+   `viewer`. The fix is a one-line role-keyed table in `ACLFilter.filter`.
+   Cost: ~10 lines of code + a test.
+
+Each item above has a measurable success criterion (a number that
+would change in a result JSON, or a test that would go from absent
+to passing). Nothing here is open-ended research — each is a finite
+data-collection task.

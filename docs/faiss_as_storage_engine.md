@@ -22,9 +22,9 @@ FAISS IVF-PQ is a **two-phase build**, not an append-friendly structure:
 **Step 1 — Training:**
 ```
 train_sample (100K random vectors)
-    → k-means cluster to nlist=4096 centroids
-    → for each sub-quantizer m: k-means to 256 PQ centroids
-    → result: quantizer + PQ codebook (fixed after training)
+ → k-means cluster to nlist=4096 centroids
+ → for each sub-quantizer m: k-means to 256 PQ centroids
+ → result: quantizer + PQ codebook (fixed after training)
 ```
 
 Training costs ~30s for 100K vectors and produces ~6MB of centroid data. It
@@ -35,18 +35,19 @@ a full rebuild.
 **Step 2 — Adding:**
 ```
 for each vector v:
-    assign to nearest IVF cluster (coarse quantizer): 1 FLOP per centroid = O(nlist × dim)
-    encode v as PQ codes: residual from centroid → quantize each sub-vector
-    append (cluster_id → pq_codes) to the inverted list for that cluster
+ assign to nearest IVF cluster (coarse quantizer): 1 FLOP per centroid = O(nlist × dim)
+ encode v as PQ codes: residual from centroid → quantize each sub-vector
+ append (cluster_id → pq_codes) to the inverted list for that cluster
 ```
 
 Adding is incremental and O(nlist × dim) per vector. At 8.8M vectors, adding
 takes ~30 minutes on CPU (dominated by PQ encoding, not IVF assignment).
 
-**Write amplification:** each vector is stored once as 16 bytes of PQ codes.
-Compare to 384 × 4 = 1536 bytes for the original float32 vector — 96× compression.
-The memmap embeddings.npy (13.5GB) is kept separately as the recovery artifact;
-only the PQ codes (~141MB) live in the FAISS index.
+**Write amplification:** each vector is stored once as 32 bytes of PQ codes
+(production m=32; was 16 bytes at m=16). Compare to 384 × 4 = 1536 bytes
+for the original float32 vector — 48× compression. The memmap
+embeddings.npy (13.5 GB) is kept separately as the recovery artifact;
+only the PQ codes (~283 MB) live in the FAISS index.
 
 ---
 
@@ -58,31 +59,41 @@ A query against an IVF-PQ index executes:
 1. Encode query: same coarse quantization + PQ encoding as write path
 2. Identify top-nprobe clusters (by distance to their centroids)
 3. For each of the nprobe clusters:
-       scan all entries in that cluster's inverted list
-       compute approximate distance using PQ asymmetric distance tables
+ scan all entries in that cluster's inverted list
+ compute approximate distance using PQ asymmetric distance tables
 4. Maintain a top-K heap across all scanned entries
 5. Return top-K (cluster_id, pq_code) pairs → decode to passage IDs
 ```
 
-**nprobe = read amplification factor:**
+**nprobe = read amplification factor.** The numbers below are the
+historical m=16 sweep (the choice that motivated the PQ-ceiling
+experiment). Production now runs m=32 — the curve is shifted upward
+but the shape is the same.
 
-| nprobe | Clusters searched | Passages scanned (avg 2150/cluster) | Predicted Recall@100 | **Measured (MiniLM, 2026-04-25)** | Measured P99 latency |
-|---|---|---|---|---|---|
-| 1 | 1/4096 = 0.02% | ~2,150 | ~0.30 | **0.221** | 3.6 ms |
-| 4 | 0.1% | ~8,600 | ~0.55 | **0.295** | 1.1 ms |
-| 8 | 0.2% | ~17,200 | ~0.70 | **0.313** | 0.7 ms |
-| **16** | **0.4%** | **~34,400** | **~0.82** | **0.321** 🚩 | 1.0 ms |
-| 32 | 0.8% | ~68,800 | ~0.88 | **0.330** | 1.1 ms |
-| 64 | 1.6% | ~137,600 | ~0.91 | **0.334** | 2.5 ms |
+| nprobe | Clusters searched | Passages scanned (avg 2,150/cluster) | Recall@100 (m=16) | P99 latency (m=16) |
+|---|---|---|---|---|
+| 1 | 1/4096 = 0.02 % | ~2,150 | 0.221 | 3.6 ms |
+| 4 | 0.10 % | ~8,600 | 0.295 | 1.1 ms |
+| 8 | 0.20 % | ~17,200 | 0.313 | 0.7 ms |
+| **16** | **0.39 %** | **~34,400** | **0.321** | **1.0 ms** |
+| 32 | 0.78 % | ~68,800 | 0.330 | 1.1 ms |
+| 64 | 1.56 % | ~137,600 | 0.334 | 2.5 ms |
 
-The recall plateau at ~0.33 across 64× nprobe (0.5% → 1.6% of clusters
-searched) means **the predicted curve was wrong**: it assumed PQ
-reconstruction error was small enough that scanning more clusters would
-keep producing new relevant docs. In reality, the PQ encoding (m=16,
-24-dim sub-vectors) is lossy enough that ~67% of true neighbours are
-filtered out by the approximate distance computation regardless of how
-many clusters we search. Fix is on the index side (larger `m` or no PQ),
-not the query side. See `status.md` Known Issues.
+The recall plateau at ~0.33 across the full sweep was the symptom that
+prompted the PQ-ceiling experiment (`design_decisions.md` #21):
+quadrupling cluster coverage (16 → 64 nprobe) only moved recall by
++0.013, suggesting the bottleneck was not "we're searching too few
+clusters" but "the PQ reconstruction error is filtering out true
+neighbours regardless of how many clusters we visit". The experiment
+confirmed the hypothesis — bumping m=16 → m=32 raised the production
+Recall@100 to 0.404 at nprobe=16 (a +19% lift). nprobe=16 was selected
+under m=16 and has not been re-swept under m=32; the optimal nprobe
+under m=32 might shift slightly (open follow-up; see Next Steps in
+`design_decisions.md`).
+
+**For the production reader:** at m=32 the same nprobe column reads
+0.221 → 0.404 at nprobe=16, but the underlying read-amplification
+arithmetic (clusters searched / total clusters) is unchanged.
 
 The **recall-latency curve** is the key FAISS operating-point tradeoff. At
 nprobe=16, we search 0.4% of the index — that's the same read amplification
@@ -96,7 +107,7 @@ is the FAISS equivalent of a B-tree's level count.
 FAISS has no WAL, no transaction log, no partial-write recovery. It is write-once:
 
 ```python
-faiss.write_index(index, "index.faiss")   # atomic from Python's perspective
+faiss.write_index(index, "index.faiss") # atomic from Python's perspective
 ```
 
 The file is written by serializing the index object. A crash mid-write produces
@@ -110,7 +121,7 @@ triggers the fallback to BM25-only mode.
 2. Log warning: "FAISS index corrupted — falling back to BM25-only"
 3. Serve BM25-only (latency increases, recall decreases, but no outage)
 4. Background job: `rebuild_index(emb_dir, faiss_dir)` — reconstructs from
-   the raw embeddings.npy (which is separately checksummed)
+ the raw embeddings.npy (which is separately checksummed)
 5. Hot-reload: swap the validated index into the serving path without restart
 
 ---
@@ -120,7 +131,8 @@ triggers the fallback to BM25-only mode.
 | Artifact | Size | Ratio to original |
 |---|---|---|
 | Raw embeddings (float32, 8.8M × 384-dim) | 13.5 GB | 1.0× |
-| PQ codes in FAISS index | ~141 MB | 0.010× |
+| PQ codes in FAISS index (m=32, production) | ~283 MB | 0.021× |
+| PQ codes in FAISS index (m=16, baseline) | ~141 MB | 0.010× |
 | IVF centroids (4096 × 384-dim × float32) | ~6 MB | 0.0004× |
 | Passage lookup (SQLite) | ~1–2 GB | ~0.1× |
 
@@ -136,10 +148,10 @@ price for the 96× compression ratio.
 2. **Latency at nprobe k** is monotonically non-decreasing in k.
 3. **Recall at nprobe=all** = Recall of exact flat search ≈ 1.0 (modulo PQ error).
 4. **Index build is not incremental**: new vectors can be added but the quantizer
-   (cluster centroids + PQ codebook) is fixed at training time. Quality degrades
-   if the data distribution shifts significantly from the training sample.
+ (cluster centroids + PQ codebook) is fixed at training time. Quality degrades
+ if the data distribution shifts significantly from the training sample.
 5. **nprobe is a query-time parameter**: changing it requires no reindex.
-   It is a pure operating-point slider between latency and recall.
+ It is a pure operating-point slider between latency and recall.
 
 The choice of nprobe=16 as the default (item #5 on the nprobe sweep) is an
 operating-point decision: see the measured curve in `dense_eval.py --sweep`

@@ -12,8 +12,9 @@ Elasticsearch requires a JVM (typically 8–16 GB heap for an 8.8M-passage index
 in production, plus OS buffer cache overhead). For a system where the query path
 also runs sentence encoder inference and FAISS search, JVM memory competes with
 GPU memory and the embedding memmap. The custom index uses ~700 MB of Python
-heap with `array.array('i')` posting-list storage (≈250 MB if VByte is wired
-into `_index`, which is not yet done — see `design_decisions.md` #9 and #15).
+heap with `array.array('i')` posting-list storage (decision #15). VByte
+gap-coding is implemented as a standalone codec but not yet wired into
+persistence — see decision #9 for the integration trade-off.
 
 **2. Plugging a neural reranker into ES is operationally painful.**
 The production pipeline is:
@@ -69,12 +70,13 @@ with PLAID compression is the SOTA dense retrieval baseline on MS MARCO.
 ### The honest verdict
 
 ColBERT would likely score higher nDCG@10 (literature ~0.72 on similar setups
-vs **0.525 measured** for this system's RRF hybrid on TREC DL 2020). The
+vs **0.5815 measured** for this system's α=0.4 score-fusion hybrid on TREC DL 2020). The
 decision to not use it is architectural, not quality-optimising. The measured
-gap is wider than the original prediction because this system's dense leg uses
-PQ-quantised IVF (m=16) which loses recall vs ColBERT's late-interaction
-representation; bumping `m` or switching to IVF-Flat would close part of the
-gap (see `design_decisions.md` #21).
+gap reflects that ColBERT's late-interaction representation captures
+token-level matching that any single-vector bi-encoder cannot. The
+PQ-ceiling experiment (`design_decisions.md` #21) confirmed our index
+quality is at 96.5% of IVF-Flat — the residual gap to ColBERT is encoder
+representation, not index compression.
 
 ---
 
@@ -121,7 +123,7 @@ more than production reliability.
 |---|---|---|---|---|
 | Build time | Fast | Medium | Very fast | Slow (deliberate) |
 | Memory footprint | 8–16 GB JVM | 8 GB (PLAID) | varies | ~3 GB |
-| Retrieval quality (nDCG@10 DL2020) | ~0.43 (BM25 only) | ~0.72 (lit) | depends on backing | **0.525** RRF hybrid measured |
+| Retrieval quality (nDCG@10 DL2020) | ~0.43 (BM25 only) | ~0.72 (lit) | depends on backing | **0.5815** α=0.4 score-fusion measured |
 | Cross-encoder pluggability | Painful | N/A | Abstracted | Native function call |
 | Observability | ES slow logs | None | Callback hooks | OTel spans, P99 per stage |
 | Component-level ablation | Limited | None | Limited | Each stage independently swappable |
