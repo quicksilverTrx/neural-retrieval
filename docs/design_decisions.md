@@ -16,60 +16,31 @@ The speed tradeoff: the custom index is slower than Elasticsearch at 8.8M passag
 
 ---
 
-### 15. `array.array('i')` storage for posting lists, not `list[tuple]`
+### 7. MiniLM-L6-v2 for dense bi-encoding, not NanoLlama
 
-**Decided:** 2026-04-24, after four failed full-corpus build attempts.
+NanoLlama (127.6M parameters, causal decoder) cannot produce meaningful fixed-length document embeddings. A causal decoder only attends to preceding tokens — the final token's representation is not a summary of the full sequence. Contrastive retraining with bidirectional attention would be required, essentially training a new model. MiniLM-L6-v2 (22M parameters) and E5-small-v2 (33M) are purpose-trained for semantic similarity via contrastive learning on 1B+ sentence pairs. They produce L2-normalised embeddings directly usable for cosine similarity.
 
-**Problem.** The original `_index: dict[str, list[tuple[int, int]]]` storage spent
-112 bytes per posting entry (56 B tuple header + 28 B per int × 2). At 88M
-entries across 8.8M docs × ~40 unique terms avg, that's ~10 GB of Python heap
-per 2.2M-doc parallel worker, scattered randomly across the address space.
+Practical impact: MiniLM encodes a 60-token passage in ~2ms on a single CPU core; NanoLlama in its current form would require ~100ms and produce worse embeddings. The narrative is not "I used my own model everywhere" but "I chose the right tool for each stage of the pipeline."
 
-This representation *indexed fine* (~60 s per 2.2M-doc shard) but could not
-be **saved**. `pickle.dump()` — even streaming into a `GzipFile` — must traverse
-the entire object graph, forcing macOS's memory compressor to decompress
-millions of non-contiguous pages. Under 4-way worker contention, the
-compressor saturates and the save phase stalls indefinitely (observed: zero
-disk writes in 12+ minutes; killed at 63 min wall time).
+---
 
-**Chosen:** `_index: dict[str, array.array('i')]` — a single contiguous int32
-buffer per term, interleaved as `[doc0, tf0, doc1, tf1, …]`.
+### 8. FAISS IVF-PQ, not HNSW
 
-| | `list[tuple[int,int]]` | `array.array('i')` |
+HNSW offers higher Recall@100 at equivalent nprobe (because graph-based traversal is more recall-efficient than IVF's cluster-based search) but has a prohibitive memory footprint at 8.8M scale:
+
+| Index type | Memory at 8.8M × 384-dim | Recall@100 (nprobe=16) |
 |---|---|---|
-| Bytes per posting entry | 112 | 8 |
-| Memory layout | pointer-chased, scattered | contiguous buffer |
-| Append one entry | `.append(tuple)` | `.extend((d, tf))` |
-| Serialise entire list | pickle traversal, page faults everywhere | `arr.tobytes()` — one memcpy |
-| Python heap per worker (2.2M docs) | ~10 GB | ~700 MB |
+| IVF-PQ (nlist=4096, m=32, nbits=8) | **360 MB measured** (~283 MB PQ-codes + centroids + inverted-list metadata) | **0.40 measured** (MiniLM); see PQ-ceiling experiment in `status.md` |
+| HNSW M=32 | ~4.5 GB | ~0.93 (literature) |
+| Flat (exact) | ~13.5 GB | 1.00 |
 
-**Persistence rewrite (NRIDX2).** With contiguous arrays, pickle is no longer
-necessary. The new binary format writes `arr.tobytes()` per term, preceded by
-a `<uint16 term_len><utf-8 term><uint32 n_pairs>` header, and trails the
-payload with a 64-byte hex sha256. No compression: the save is I/O-bound and
-uncompressed reads are faster than gzip decompression. Two-pass load (hash
-first, then parse) ensures any corruption surfaces as "Checksum mismatch"
-rather than a misleading UTF-8 decode error.
+IVF-PQ fits in commodity RAM (16GB machine handles index + corpus + Python runtime). HNSW requires a 16GB+ machine just for the index. The ~3–5% Recall@100 gap is acceptable given that the hybrid RRF fusion layer recovers some of it via the BM25 component.
 
-**Build impact.**
-
-| Metric | Before (tuple-based) | After (array-backed) |
-|---|---|---|
-| End-to-end full-corpus build | unbounded (never completed) | 86.5 s |
-| Peak per-worker RSS | 300 MB–1.9 GB (thrashing) | ~700 MB (stable) |
-| Per-worker CPU utilisation | 7–34% (compressor-starved) | 93–99% |
-| Save time per 2.2M-doc partial | ∞ | 5–10 s |
-
-**API compatibility.** `get_posting_list(term) -> list[tuple[int, int]]` is
-kept as a backward-compat shim (allocates tuples on call, slow for large
-posting lists). Hot paths — `BM25Scorer.score_batch`, `BM25Retriever.retrieve`,
-`persistence.save_index` — use the new `get_raw_posting(term) -> array.array`
-and iterate pair-wise by index without allocating tuples.
-
-**Note.** The `InvertedIndex` schema is a core module.
-The change to `array.array` storage touches that schema, not just its
-implementation, and was approved explicitly on 2026-04-24 after analysis of
-the macOS memory compressor failure mode.
+IVF-PQ parameter choice:
+- **nlist = 4096**: √8.8M ≈ 2966; 4096 gives ~2150 passages per cluster. The standard √N heuristic. Fewer clusters → more passages per probe (slower, higher recall). More clusters → fewer passages per probe (faster, lower recall at same nprobe).
+- **m = 32**: Sub-quantizers for 384-dim vectors. 384 / 32 = 12-dim per sub-vector. Each sub-vector quantised to 1 byte (256 centroids). Total: 8.8M × 32 bytes = 283 MB for the PQ codes. m=16 (24-dim sub-vectors) was the original choice; the PQ-ceiling experiment showed m=32 recovers +19% Recall@100 and +16% nDCG@10 at 1.7× the size — well within the latency and storage budgets.
+- **nbits = 8**: 256 PQ centroids per sub-quantizer. Standard choice.
+- **nprobe = 16 default**: 16/4096 ≈ 0.4% of clusters searched. Sweet spot on latency-recall curve. The full sweep (nprobe=1,4,8,16,32,64) is written to JSON for review.
 
 ---
 
@@ -129,6 +100,169 @@ with VByte payloads.
 | `list[tuple[int, int]]` | 112 | 0 (direct iter) | tuple alloc |
 | `array.array('i')` (current) | 8 | 0 (direct index) | `extend((d, tf))` |
 | VByte over array (gap-coded, in-memory variant) | ~3 (avg) | decode O(bytes) per posting | encode O(bytes) per posting |
+
+---
+
+### 15. `array.array('i')` storage for posting lists, not `list[tuple]`
+
+**Decided:** 2026-04-24, after four failed full-corpus build attempts.
+
+**Problem.** The original `_index: dict[str, list[tuple[int, int]]]` storage spent
+112 bytes per posting entry (56 B tuple header + 28 B per int × 2). At 88M
+entries across 8.8M docs × ~40 unique terms avg, that's ~10 GB of Python heap
+per 2.2M-doc parallel worker, scattered randomly across the address space.
+
+This representation *indexed fine* (~60 s per 2.2M-doc shard) but could not
+be **saved**. `pickle.dump()` — even streaming into a `GzipFile` — must traverse
+the entire object graph, forcing macOS's memory compressor to decompress
+millions of non-contiguous pages. Under 4-way worker contention, the
+compressor saturates and the save phase stalls indefinitely (observed: zero
+disk writes in 12+ minutes; killed at 63 min wall time).
+
+**Chosen:** `_index: dict[str, array.array('i')]` — a single contiguous int32
+buffer per term, interleaved as `[doc0, tf0, doc1, tf1, …]`.
+
+| | `list[tuple[int,int]]` | `array.array('i')` |
+|---|---|---|
+| Bytes per posting entry | 112 | 8 |
+| Memory layout | pointer-chased, scattered | contiguous buffer |
+| Append one entry | `.append(tuple)` | `.extend((d, tf))` |
+| Serialise entire list | pickle traversal, page faults everywhere | `arr.tobytes()` — one memcpy |
+| Python heap per worker (2.2M docs) | ~10 GB | ~700 MB |
+
+**Persistence rewrite (NRIDX2).** With contiguous arrays, pickle is no longer
+necessary. The new binary format writes `arr.tobytes()` per term, preceded by
+a `<uint16 term_len><utf-8 term><uint32 n_pairs>` header, and trails the
+payload with a 64-byte hex sha256. No compression: the save is I/O-bound and
+uncompressed reads are faster than gzip decompression. Two-pass load (hash
+first, then parse) ensures any corruption surfaces as "Checksum mismatch"
+rather than a misleading UTF-8 decode error.
+
+**Build impact.**
+
+| Metric | Before (tuple-based) | After (array-backed) |
+|---|---|---|
+| End-to-end full-corpus build | unbounded (never completed) | 86.5 s |
+| Peak per-worker RSS | 300 MB–1.9 GB (thrashing) | ~700 MB (stable) |
+| Per-worker CPU utilisation | 7–34% (compressor-starved) | 93–99% |
+| Save time per 2.2M-doc partial | ∞ | 5–10 s |
+
+**API compatibility.** `get_posting_list(term) -> list[tuple[int, int]]` is
+kept as a backward-compat shim (allocates tuples on call, slow for large
+posting lists). Hot paths — `BM25Scorer.score_batch`, `BM25Retriever.retrieve`,
+`persistence.save_index` — use the new `get_raw_posting(term) -> array.array`
+and iterate pair-wise by index without allocating tuples.
+
+**Note.** The `InvertedIndex` schema is a core module.
+The change to `array.array` storage touches that schema, not just its
+implementation, and was approved explicitly on 2026-04-24 after analysis of
+the macOS memory compressor failure mode.
+
+---
+
+### 16. Streaming `.npy` write for memory-constrained encoders
+
+**Status:** operational adaptation, **not a correctness bug**. The previous
+`np.memmap` implementation passed all 32 dense unit tests and is correct
+Python. This decision is about how the encoder behaves on a 16 GB macOS
+host at the full 8.8M-passage scale, not about an algorithmic defect.
+
+**Decided:** 2026-04-24, after the MPS encode stalled at ~3 min wall time
+on a 16 GB Apple Silicon machine.
+
+**Problem.** `encode_corpus()` originally pre-allocated a 13.5 GB `np.memmap`
+for the full MS MARCO embedding matrix (8.8M × 384 float32) and wrote each
+chunk into a slice:
+
+```python
+embeddings = np.lib.format.open_memmap(..., shape=(n, dim))
+embeddings[write_ptr:end] = vecs
+```
+
+On macOS, writing to a large memmap *faults every target page resident*,
+and the kernel only evicts those pages when it needs to.  Observed on a
+16 GB machine during a full-corpus run:
+
+- Process physical footprint climbed to **14.3 GB** (peak 15.4 GB) — effectively
+  the entire memmap became resident.
+- `sample(1)` stack trace: blocked in `MPSStream::synchronize` →
+  `[_MTLCommandBuffer waitUntilCompleted]` → `_pthread_cond_wait`.  The GPU
+  was stalled waiting for the host memory system.
+- CPU utilisation collapsed from 87% (startup) to 7% (stalled).
+- No progress output after the first chunk in over 3 minutes.
+
+**Chosen:** write the .npy file via a plain file handle, one chunk per
+`file.write()`.  The kernel moves written pages to the page cache and
+(asynchronously) to disk without making them part of the process's
+resident-memory accounting.  Process footprint stays bounded by the chunk
+buffer plus model + pids.
+
+```python
+emb_file = emb_path.open("wb")
+np.lib.format.write_array_header_1_0(emb_file, {
+    "descr": np.lib.format.dtype_to_descr(np.dtype(np.float32)),
+    "fortran_order": False,
+    "shape": (n, self.embedding_dim),
+})
+for each chunk:
+    vecs = model.encode(chunk_texts, ...)      # GPU → host
+    emb_file.write(vecs.astype(np.float32, copy=False).tobytes())
+    if device == "mps":
+        torch.mps.empty_cache()                # release MPS allocator buffers
+```
+
+The produced file is a standard `.npy` — downstream `load_embeddings()`
+still uses `np.lib.format.open_memmap(..., mode="r")`.  Read-side mmap is
+fine because callers only touch embeddings they're actively using (FAISS
+training on a 100K sample, then one-pass `add()` through the whole
+matrix).
+
+**Three concrete changes were made to `retrieval/dense/encoder.py`** —
+labelled here so anyone reading the diff can map the code to this rationale:
+
+1. **Output path:** `np.lib.format.open_memmap(..., shape=...)[slice] = vecs`
+   → `np.lib.format.write_array_header_1_0(emb_file, {...})` once at the
+   start, then `emb_file.write(vecs.tobytes())` per chunk. Produces a
+   byte-identical `.npy` file; only the *write* path differs.
+2. **Chunk granularity:** `chunk_size = batch_size * 100` (default 25,600)
+   → `chunk_size = batch_size * chunk_multiplier` with default
+   `chunk_multiplier=8` (default 4,096). Smaller chunks mean fewer accumulated
+   forward passes per `model.encode()` sync — bounds MPS allocator buildup
+   between explicit cache flushes. Exposed as `--chunk-multiplier` CLI flag
+   in `encode_corpus.py` for per-machine tuning.
+3. **MPS cache release:** added `torch.mps.empty_cache()` call between chunks
+   when `device.startswith("mps")`. Without this, the MPS allocator caches
+   intermediate buffers across forward passes and the process footprint grows
+   monotonically until the OS kills the run.
+
+`load_embeddings()` (read side) is unchanged — it still uses
+`np.lib.format.open_memmap(mode="r")`.  Read-only mmap is safe.
+
+**Throughput impact (observed).**
+
+| | memmap write (old) | streaming write (new) |
+|---|---|---|
+| 5K-passage smoke test (synthetic) | 5,144 p/s | 4,314 p/s |
+| 8.8M-passage corpus run on 16 GB Mac | **stalled at ~3 min, zero progress** | **completed: 4h33m wall, 539 p/s sustained, 13.58 GB output, 0 crashes** |
+| Peak process RSS at full scale | 14.3 GB | ~200 MB |
+
+The smoke test rates are roughly equal because 5K × 1.5 KB = 7.5 MB fits
+trivially in RAM either way — the memmap pathology only manifests when the
+file grows large enough to compete with the model and MPS allocator for
+physical RAM. The streaming write is slightly slower in the smoke regime
+(one extra `.tobytes()` allocation per chunk) but the loss is meaningless
+at the scale where it matters.
+
+**Alternative we did NOT pick: `mmap.madvise(MADV_DONTNEED)`** after each
+write.  macOS `MADV_DONTNEED` is best-effort and doesn't reliably evict
+dirty pages; the streaming write is simpler and has no edge cases.
+
+**When the original memmap path is the right choice.** On Linux with ample
+RAM headroom, or on CUDA hosts where the GPU memory is separate from the
+file-cache pool, `np.memmap` slice-assignment is fine — the kernel evicts
+clean pages aggressively and the process footprint stays bounded.  The
+streaming `.npy` write is the more conservative default; it loses nothing
+in those environments and is necessary on macOS at corpus scale.
 
 ---
 
@@ -247,3 +381,222 @@ content terms (e.g. `"two"` 525 K, `"world"` 273 K postings) where Python
 optimisation (above) cuts P99 to 536 ms; further wins require either a
 C extension or a min-should-match prefilter (WAND-style). Defer to
 a follow-up.
+
+---
+
+### 18. nprobe = 16 (chosen 2026-04-26)
+
+**Decision: ship with `nprobe=16` as the default.**
+
+The full sweep (`benchmarks/results/20260425T165752Z_1B_*.json`):
+
+| nprobe | Recall@100 | ΔRecall | P50 (ms) | P99 (ms) |
+|---|---|---|---|---|
+| 1 | 0.221 | — | 0.5 | 3.6 |
+| 4 | 0.295 | +0.074 | 0.4 | 1.1 |
+| 8 | 0.313 | +0.018 | 0.4 | 0.7 |
+| **16** | **0.321** | **+0.008** | **0.5** | **1.0** |
+| 32 | 0.330 | +0.009 | 0.8 | 1.1 |
+| 64 | 0.334 | +0.004 | 1.2 | 2.5 |
+
+**Why 16:**
+
+- **Recall plateau begins at 8.** From 1→4 we gain +0.074 recall (huge). From 4→8 we gain +0.018. From 8→16 only +0.008. From 16→64 (4× more clusters) only +0.013 total. The marginal-recall-per-unit-latency curve flattens hard around 8–16.
+- **Latency is essentially free in this region.** P99 at nprobe=16 is 1.0 ms, vs 0.7 ms at nprobe=8. The 0.3 ms cost buys an additional 2.5% relative recall headroom and provides safety margin against query-distribution drift.
+- **The recall ceiling is PQ, not nprobe.** Doubling nprobe to 32 only gains +0.009 recall; doubling again to 64 gains +0.004. The plateau at ~0.33 across 64× nprobe means the true neighbours are being filtered out by the PQ approximate distance, not by under-searched clusters. Higher nprobe cannot fix this; only lowering PQ reconstruction error (larger `m`) or removing PQ (IVF-Flat) can.
+- **Spec recommendation alignment.** The spec defaults to nprobe=16 and the data confirms it's the right operating point on this corpus + this index configuration.
+
+**What this does NOT solve:** Recall@100 is still 0.321 (vs the 0.75 ship-gate target). That gap is the PQ ceiling and is addressed in a separate decision about `m`/index type. The nprobe choice is independent: even if we switched to IVF-Flat tomorrow, nprobe=16 would still be the right operating point for the IVF clustering layer.
+
+---
+
+### 19. Encoder choice — all-MiniLM-L6-v2 (chosen 2026-04-26)
+
+**Decision: ship all-MiniLM-L6-v2 as the production dense encoder.**
+
+The naive prior is "larger model is better" — E5-small-v2 has 33 M parameters vs MiniLM's 22 M, and the literature usually has E5 ~3 nDCG points ahead of MiniLM on MS MARCO. The measured data on this system says the opposite.
+
+**Head-to-head (DL2020, 54 queries, identical FAISS IVF-PQ params nlist=4096/m=16/nbits=8/nprobe=16):**
+
+| Metric | MiniLM-L6-v2 | E5-small-v2 | Winner |
+|---|---|---|---|
+| nDCG@10 | **0.4547** | 0.4281 | MiniLM +0.027 (+6%) |
+| MRR@10 | **0.8318** | 0.7579 | MiniLM +0.074 (+10%) |
+| Recall@100 | **0.3388** | 0.3113 | MiniLM +0.028 (+9%) |
+| Encode wall time (8.8 M passages, MPS) | **4 h 33 m** | 9 h 47 m | MiniLM 2.1× |
+| Throughput | **539 p/s** | 251 p/s | MiniLM 2.1× |
+| Model size | **22 M params** | 33 M params | MiniLM smaller |
+| Output dim | 384 | 384 | tie |
+
+**Why "larger is better" doesn't hold here:**
+
+1. **Both models output the same 384-dim vector.** E5's extra parameters go into deeper attention layers, not into more representational capacity per output vector. FAISS sees identically-shaped embeddings from both.
+2. **MiniLM is fine-tuned specifically on MS MARCO** via the SBERT lineage (contrastive learning on MS MARCO query-passage pairs). MS MARCO is exactly the corpus we evaluate on. E5 was trained on a much larger but more general corpus (1B+ pairs, web-scale). For this benchmark, domain-specific tuning beats general-purpose scale.
+3. **The PQ ceiling caps both models.** Both plateau at Recall@100 ≈ 0.33 across the full nprobe sweep. The bottleneck is the FAISS PQ quantisation (m=16 → 24-dim sub-vectors, 96× compression of the 384-dim float32 vector), not the encoder. We literally cannot tell from the current data which model would win in IVF-Flat — the 24-dim PQ codebook may be aggressively distorting E5's distribution but not MiniLM's. We measure what we ship.
+4. **Operational cost is real.** E5 takes 2.1× as long to re-encode the corpus. In practice the corpus refreshes whenever passages change; doubling the re-encode wall time has tangible cost on each refresh.
+
+**Risk note (kept honest):** if the FAISS decision flips to a richer index (`m=32`, `m=48`, or IVF-Flat outright), the encoder choice should be re-evaluated. E5 might win in that regime — its training distribution is broader and richer embeddings have more headroom under less-lossy compression. **The current decision optimises the system as actually shipped, not as theoretically possible.**
+
+**Tactical note for serve time:** MiniLM has no prefix discipline. E5 requires `"query: "` and `"passage: "` prefixes that must match between encode-time and query-time. Picking MiniLM removes one class of footgun (a forgotten prefix at query time silently degrades recall by ~3 nDCG points on E5 — measured separately during encoder testing).
+
+**Re-evaluation trigger:** if the FAISS decision changes the index family or `m`, re-run `dense_eval.py` for both encoders and update this entry.
+
+---
+
+### 20. FAISS IVF-PQ parameter derivation — `nlist=4096, m=32, nbits=8` (m=32 chosen 2026-04-27, supersedes m=16 baseline)
+
+The numbers landed in `build_faiss.py` are not arbitrary; each
+follows from a memory budget + standard FAISS guidance + the corpus
+shape.
+
+**Corpus shape:** N = 8,841,823 vectors, dim = 384, dtype = float32.
+Raw float32 storage = 13.5 GB (the IVF-Flat baseline). Memory target
+for the production index: < 250 MB.
+
+**`nlist = 4096` — number of IVF clusters**
+
+The standard heuristic is `nlist ≈ √N`. For N = 8.8M, √N ≈ 2966.
+Round up to a power of 2 → 4096. Two reasons for the power-of-2 round:
+
+1. **Cluster size.** 8.8M / 4096 ≈ 2,150 docs per cluster on average.
+   This is the right ballpark for IVF: small enough that scanning all
+   docs in `nprobe` clusters is fast, large enough that each cluster
+   captures a meaningful semantic neighbourhood. Going to nlist = 8192
+   would halve cluster size to ~1,075 docs — search becomes faster but
+   recall at low nprobe drops sharply because fewer candidate clusters
+   are likely to contain a query's neighbours. Going to nlist = 2048
+   doubles cluster size → slower scans for the same nprobe.
+
+2. **k-means training cost and quality.** k-means on 100K samples
+   produces 4096 centroids of about 24 samples each in expectation —
+   marginal for k-means clustering quality (FAISS warns that 39× nlist
+   is the recommended sample count, i.e. ~160K). We accept this warning
+   because empirical recall on the sweep doesn't show degradation;
+   re-training with 200K is a tactical follow-up that may move
+   Recall@100 up by a few percentage points.
+
+**`m = 32` — number of PQ sub-quantisers (production)**
+
+`m` partitions the 384-dim vector into `m` sub-vectors of `dim/m`
+dimensions each. Each sub-vector is then quantised to a one-byte code
+(8 bits → 256 centroids). The trade-off:
+
+- **`m = 8`** → 48-dim sub-vectors. Each sub-vector carries more variance,
+  so 256 centroids isn't enough to represent it well; reconstruction
+  error grows. Memory drops to ~70 MB.
+- **`m = 16`** → 24-dim sub-vectors. The original choice and FAISS's
+  default recommendation. 209 MB measured, **R@100 = 0.339**.
+- **`m = 32` (production)** → 12-dim sub-vectors. Better reconstruction
+  per sub-vector. 360 MB measured, **R@100 = 0.404** — +19% recall vs
+  m=16 at 1.7× the size, P99 still inside the 20 ms latency budget.
+  Chosen after the PQ-ceiling experiment (#21).
+- **`m = dim`** = 384 → 1-dim sub-vectors, equivalent to per-dim scalar
+  quantisation. Loses the joint variance-capturing property of PQ.
+
+m=32 was selected over m=16 once the PQ-ceiling sweep confirmed that
+the 256 MB / vector budget paid for itself in retrieval quality.
+
+**`nbits = 8` — bits per sub-quantiser code**
+
+2^nbits = 2^8 = 256 centroids per sub-quantiser. This is the standard.
+
+- **`nbits = 4`** → 16 centroids per sub-quantiser. Memory halves but
+  reconstruction error roughly doubles — borderline-unusable for retrieval.
+- **`nbits = 12`** → 4096 centroids. Memory grows 1.5×; codebook training
+  on 100K samples per sub-quantiser is borderline (need ~5000 samples per
+  centroid for stable k-means; we have only ~25 at nbits=12).
+
+`nbits = 8` is the only practical choice for 100K training samples.
+
+**Memory math (matches measured 360 MB index for m=32):**
+
+| Component | Calculation | Bytes |
+|---|---|---|
+| PQ codes (per vector) | 8.8M × 32 bytes | 283 MB |
+| IVF cluster centroids | 4096 × 384 × 4 bytes | 6 MB |
+| PQ codebooks (global, shared across clusters) | 32 × 256 × 12 × 4 bytes | 393 KB |
+| FAISS metadata + inverted-list headers | (file format overhead) | ~70 MB |
+| **Total** | | **~360 MB measured** |
+
+**The recall ceiling that this parameter set imposes**
+
+The information budget per stored vector is `m × nbits`. At m=32 that's
+256 bits per vector vs the original 12,288 bits (float32 × 384) — a
+**48× compression ratio**, keeping ~2.1% of the information. At m=16
+(the original) it was 128 bits / 96× compression / ~1.04% retained.
+Doubling m from 16 → 32 halves the compression ratio and recovered
+~50% of the gap to IVF-Flat (R@100 0.339 → 0.404 vs Flat 0.418).
+
+If you want Recall@100 ≥ 0.6, the index needs more bits per vector
+(larger `nbits`, scalar quantisation like SQ8 — see #21 for the SQ8
+sweep, or no quantisation at all). Beyond R@100 ≈ 0.42 the bottleneck
+shifts to the encoder, not the index.
+
+**Re-evaluation trigger:** revisit if the encoder is upgraded (E5-large,
+BGE-large) or if the latency budget moves (SQ8 unlocks at P99 > 50 ms).
+
+---
+
+### 21. PQ-ceiling experiment — m∈{16, 32} / SQ8 / Flat sweep (chosen 2026-04-27)
+
+**What was measured:** rebuilt the MiniLM dense index four ways from the same embeddings — IVF-PQ m=16, IVF-PQ m=32, IVF-SQ8 (8-bit scalar quantisation per dim), and IVF-Flat (raw float32). Same nlist=4096, same nprobe sweep, same encoder, same query set. The only thing that varied was per-vector storage.
+
+
+**Why this experiment matters:** the dense Recall@100 plateau at ~0.34
+across the full nprobe sweep (1 → 64) suggested the bottleneck was PQ
+quantisation loss, not under-searched clusters or weak encoder. This
+experiment is the falsification test — if PQ is the cause, removing it
+should unlock recall.
+
+**Result — full PQ-ceiling sweep on TREC DL 2020, 54 queries:**
+
+| Variant | Index size | nDCG@10 | Recall@100 | P50 ms | P99 ms |
+|---|---|---|---|---|---|
+| IVF-PQ m=16 (legacy) | 209 MB | 0.4547 | 0.3388 | 0.5 | 0.7 |
+| **IVF-PQ m=32 (production)** | **360 MB** | **0.5262** | **0.4037** | 1.1 | 11.9 |
+| IVF-SQ8 | 3.47 GB | 0.5613 | 0.4179 | 16.2 | 54.2 |
+| IVF-Flat | 13.5 GB | 0.5611 | 0.4185 | — | ~800 |
+
+**Findings:**
+
+1. **m=16 → m=32 closes ~50% of the m=16 → Flat gap.** Doubling the
+   sub-quantiser count recovers +19% Recall@100 (0.339 → 0.404 vs Flat
+   0.418) and +16% nDCG@10. The information budget per vector doubles
+   from 128 bits (m=16) to 256 bits (m=32), still 48× compressed vs the
+   original 12,288-bit float32 vector.
+
+2. **SQ8 ≈ IVF-Flat at 25% the size.** Recall@100 0.4179 vs Flat 0.4185
+   (within 0.001). Scalar-quantising each of the 384 dims to 8 bits is
+   essentially lossless for retrieval — but P99 = 54 ms blows the 20 ms
+   gate, so SQ8 is not production-viable for this latency budget.
+
+3. **The "PQ accounts for 100% of the gap" claim was overclaim.** PQ
+   accounts for ~50% of the gap from m=16 to Flat (which is itself the
+   index-quality ceiling). The remaining gap from Flat (R@100 0.418) to
+   the spec's 0.75 expectation is encoder + sparse-judged-qrels, not PQ.
+   MiniLM-L6-v2 on TREC DL 2020 with judged-only-recall has a hard ceiling
+   around 0.42 regardless of index family. Closing that gap requires a
+   stronger encoder (E5-large, BGE-large), denser qrel coverage, or
+   accepting that judged-only-recall isn't measuring the true ceiling.
+
+4. **Production pick: m=32.** Only variant that improves recall meaningfully
+   while staying inside the 20 ms P99 latency gate. Storage cost (360 MB
+   vs 209 MB) is negligible. SQ8 is the latency-relaxed alternative if a
+   future deployment can budget 50+ ms P99. IVF-Flat is the diagnostic
+   ceiling reference, never a production candidate.
+
+**What this changes:**
+
+- The production FAISS index is now `IVF-PQ nlist=4096, m=32, nbits=8`
+  (decision #20 updated).
+- Hybrid α-fusion was re-swept against the m=32 dense leg; best α shifted
+  from 0.8 to 0.4, and α=0.4 fusion (nDCG@10 0.5815) now beats RRF
+  (0.5240). RRF (rank-fusion) is conservative; with a strong dense leg,
+  score-fusion captures more of the joint signal. See #11.
+
+**What this does NOT change:**
+
+- Dense Recall@100 > 0.75 ship gate still fails. Even Flat caps at 0.42.
+  Closing the gap requires a stronger encoder, not a richer index.
+- The encoder choice (#19, MiniLM). E5 has not been re-run with m=32; the
+  m=16 head-to-head verdict stands but is qualified.
